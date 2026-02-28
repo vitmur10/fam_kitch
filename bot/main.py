@@ -24,8 +24,8 @@ django.setup()
 # ----------------------------------
 
 from aiogram import Bot, Dispatcher
-from bot.config import BOT_TOKEN
-from bot.commands import router
+from config import BOT_TOKEN
+from commands import router
 
 
 async def main():
