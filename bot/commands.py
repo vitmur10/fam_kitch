@@ -6,11 +6,13 @@ from aiogram.exceptions import TelegramBadRequest
 import traceback
 from datetime import datetime
 from zoneinfo import ZoneInfo
-
-from keyboards.main import main_menu_kb, menu_kb, after_confirm_kb, already_ordered_kb
+import time
+from asgiref.sync import sync_to_async
+from django.apps import apps
+from payments.wayforpay import create_invoice
+from keyboards.main import main_menu_kb, menu_kb, after_confirm_kb
 from keyboards.locations import locations_kb
 from keyboards.qty_picker import qty_kb
-
 from utils.utils import (
     get_bot_text, get_menu,
     orm_create_order, orm_set_subscribe,
@@ -18,7 +20,8 @@ from utils.utils import (
     orm_get_customer_location, orm_set_customer_location,
     orm_get_active_order_for_day, orm_cancel_order,
 )
-
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+import uuid
 router = Router()
 
 
@@ -139,10 +142,10 @@ async def on_contact(message: Message, state: FSMContext):
 @router.message(F.text == "🥗 Замовити")
 async def on_order(message: Message, state: FSMContext):
     # часовий фільтр (Київ)
-    now = _now_kyiv()
+    """    now = _now_kyiv()
     if not _is_working_hours_kyiv(now):
         await message.answer("⛔ Неможливо оформити замовлення в неробочі години.")
-        return
+        return"""
 
     data = await state.get_data()
 
@@ -293,11 +296,6 @@ async def on_qty(cb: CallbackQuery, state: FSMContext):
 async def on_confirm(cb: CallbackQuery, state: FSMContext):
     data = await state.get_data()
 
-    now = _now_kyiv()
-    if not _is_working_hours_kyiv(now):
-        await cb.answer("⛔ Неможливо оформити замовлення в неробочі години.", show_alert=True)
-        return
-
     telegram_id = cb.from_user.id
     phone = data.get("phone", "")
     first_name = cb.from_user.first_name or ""
@@ -305,10 +303,8 @@ async def on_confirm(cb: CallbackQuery, state: FSMContext):
 
     location_code = data.get("location")
     items = data.get("menu_items", []) or []
-    menu_date = data.get("menu_date")
     menu_day_id = data.get("menu_day_id")
     cart = data.get("cart", {}) or {}
-    is_subscribed = bool(data.get("is_subscribed", True))
 
     if not cart:
         msg = await get_bot_text("empty_cart")
@@ -332,7 +328,6 @@ async def on_confirm(cb: CallbackQuery, state: FSMContext):
         "username": username,
         "location_code": location_code,
         "menu_day_id": int(menu_day_id),
-        # NEW: cart ключі по key
         "cart": {str(k): int(v) for k, v in cart.items()},
         "comment": "",
     }
@@ -349,36 +344,78 @@ async def on_confirm(cb: CallbackQuery, state: FSMContext):
         await cb.answer()
         return
 
-    order_id = created["id"]
+    order_id = int(created["id"])
+
+    # total з бекенду (пріоритет), якщо нема — з локального кошика
     total = int(float(created.get("total", local_total)))
 
-    await state.update_data(
-        last_order={
-            "order_id": order_id,
-            "menu_date": menu_date,
-            "menu_day_id": int(menu_day_id),
-            "location": location_code,
-            "cart": cart,
-            "total": total,
-        }
+    Payment = apps.get_model("payments", "Payment")
+
+    # ✅ УНІКАЛЬНИЙ orderReference для WayForPay
+    # щоб не було Duplicate Order ID при повторному підтвердженні
+    order_ref = f"{order_id}-{int(time.time())}-{uuid.uuid4().hex[:6]}"
+
+    # 1) Створюємо запис платежу (FK правильно через order_id=)
+    pay = await sync_to_async(Payment.objects.create)(
+        order_id=order_id,
+        provider="wayforpay",
+        order_reference=order_ref,
+        amount=str(total),
+        currency="UAH",
+        telegram_id=telegram_id,   # ✅ (після міграції в Payment)
     )
 
-    name = _display_name(cb.from_user)
+    # 2) Формуємо products з кошика
+    pm = _positions_map(items)  # key -> {title, price}
+    products = []
+    for key, qty in (cart or {}).items():
+        meta = pm.get(str(key))
+        if not meta:
+            continue
+        products.append({
+            "name": meta["title"],
+            "count": int(qty),
+            "price": int(meta["price"]),
+        })
 
-    text = (
-        f"✅ {name}, підтверджено! Ваше замовлення №{order_id}:\n"
-        + "\n".join(lines)
-        + f"\n\n📍 Локація: {location_code}\n💰 Разом: {total}₴"
-        + "\n⏰ Очікуйте заказ 13:00–14:00"
+    if not products:
+        products = [{"name": "Оплата замовлення", "count": 1, "price": total}]
+
+    # 3) Перераховуємо total, щоб точно збігався з products
+    total = sum(p["count"] * p["price"] for p in products)
+
+    if str(pay.amount) != str(total):
+        pay.amount = str(total)
+        await sync_to_async(pay.save)(update_fields=["amount"])
+
+    # 4) Створюємо інвойс
+    invoice = await create_invoice(
+        order_reference=pay.order_reference,
+        amount=total,
+        products=products,
     )
+    invoice_url = invoice.get("invoiceUrl")
 
-    await cb.message.answer(text, reply_markup=after_confirm_kb(is_subscribed, can_cancel=True))
+    # 5) Відправляємо кнопку оплати
+    if invoice_url:
+        pay.invoice_url = invoice_url
+        await sync_to_async(pay.save)(update_fields=["invoice_url"])
 
-    # restore bottom bar (hide phone button because we have it)
-    try:
-        await cb.message.answer("🏠 Головне меню", reply_markup=main_menu_kb(has_phone=True, show_order=True))
-    except Exception:
-        pass
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="💳 Оплатити", url=invoice_url)]
+        ])
+
+        await cb.message.answer(
+            f"✅ Замовлення №{order_id} створено.\n"
+            f"💰 До сплати: {total}₴\n"
+            f"Натисніть кнопку для оплати 👇",
+            reply_markup=kb
+        )
+    else:
+        await cb.message.answer(
+            f"Замовлення №{order_id} створено, але рахунок для оплати не сформувався ❌\n"
+            f"Відповідь WayForPay: {invoice}"
+        )
 
     await cb.answer()
 
@@ -389,10 +426,10 @@ async def on_confirm(cb: CallbackQuery, state: FSMContext):
 async def on_repeat(cb: CallbackQuery, state: FSMContext):
     data = await state.get_data()
 
-    now = _now_kyiv()
+    """    now = _now_kyiv()
     if not _is_working_hours_kyiv(now):
         await cb.answer("⛔ Неможливо оформити замовлення в неробочі години.", show_alert=True)
-        return
+        return"""
     last = data.get("last_order")
 
     if not last:
@@ -495,10 +532,10 @@ async def on_share_phone(message: Message, state: FSMContext):
 
 @router.callback_query(F.data == "order:more")
 async def on_order_more(cb: CallbackQuery, state: FSMContext):
-    now = _now_kyiv()
+    """    now = _now_kyiv()
     if not _is_working_hours_kyiv(now):
         await cb.answer("⛔ Неможливо оформити замовлення в неробочі години.", show_alert=True)
-        return
+        return"""
 
     data = await state.get_data()
 
@@ -604,3 +641,44 @@ async def on_any_message(message: Message, state: FSMContext):
         "Оберіть один із варіантів 👇",
         reply_markup=main_menu_kb(has_phone=bool(phone), show_order=True)
     )
+
+
+@router.callback_query(F.data == "orders:list")
+async def my_orders(cb: CallbackQuery):
+    Order = apps.get_model("orders", "Order")
+    Payment = apps.get_model("payments", "Payment")
+
+    telegram_id = cb.from_user.id
+
+    # беремо останні 5 замовлень
+    orders = await sync_to_async(list)(
+        Order.objects.filter(telegram_id=telegram_id)
+        .order_by("-id")[:5]
+    )
+
+    if not orders:
+        await cb.message.answer("📦 У вас поки немає замовлень.")
+        await cb.answer()
+        return
+
+    text = "📦 Ваші останні замовлення:\n\n"
+
+    for order in orders:
+
+        pay = await sync_to_async(
+            Payment.objects.filter(order_id=order.id).first
+        )()
+
+        if pay and pay.status == "paid":
+            status = "✅ Оплачено"
+        elif pay:
+            status = "💳 Очікує оплату"
+        else:
+            status = "⏳ Створено"
+
+        text += f"Замовлення №{order.id}\n"
+        text += f"Сума: {order.total}₴\n"
+        text += f"Статус: {status}\n\n"
+
+    await cb.message.answer(text)
+    await cb.answer()

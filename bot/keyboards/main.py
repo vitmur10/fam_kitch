@@ -115,13 +115,4 @@ def after_confirm_kb(is_subscribed: bool, can_cancel: bool = True) -> InlineKeyb
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def already_ordered_kb(is_subscribed: bool) -> InlineKeyboardMarkup:
-    sub_text = "Відписатися" if is_subscribed else "Підписатися"
-    sub_cb = "sub:off" if is_subscribed else "sub:on"
 
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Зробити ще заказ", callback_data="order:more")],
-        [InlineKeyboardButton(text="Повторити заказ", callback_data="order:repeat")],
-        [InlineKeyboardButton(text="❌ Скасувати останнє", callback_data="order:cancel")],
-        [InlineKeyboardButton(text=sub_text, callback_data=sub_cb)],
-    ])
