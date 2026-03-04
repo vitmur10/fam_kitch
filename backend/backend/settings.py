@@ -35,18 +35,15 @@ CSRF_TRUSTED_ORIGINS = [
     "https://8660-2a02-2378-1185-e414-4d65-981c-e27b-3a67.ngrok-free.app"
 ]
 # Application definition
-"""WFP_MERCHANT_ACCOUNT = os.getenv("WFP_MERCHANT_ACCOUNT")
+WFP_MERCHANT_ACCOUNT = os.getenv("WFP_MERCHANT_ACCOUNT")
 WFP_SECRET_KEY = os.getenv("WFP_SECRET_KEY")
 WFP_MERCHANT_DOMAIN = os.getenv("WFP_MERCHANT_DOMAIN")
 
-BOT_TOKEN = os.getenv("BOT_TOKEN")"""
+BOT_TOKEN = os.getenv("BOT_TOKEN")
 
-WFP_MERCHANT_ACCOUNT = "test_merch_n1"
-WFP_SECRET_KEY = "flk3409refn54t54t*FNJRET"
-WFP_MERCHANT_DOMAIN = "family_kitchen.ua"
-BOT_TOKEN="8448565936:AAEWdZyOx2X3UWAHWKCRa9EvueUm_Uf-Fxg"
+
 # ПУБЛІЧНИЙ HTTPS URL твого Django endpoint:
-WFP_SERVICE_URL = "https://8660-2a02-2378-1185-e414-4d65-981c-e27b-3a67.ngrok-free.app/payments/wayforpay/callback/"
+WFP_SERVICE_URL = "http://45.94.156.177:8000/payments/wayforpay/callback/"
 INSTALLED_APPS = [
     "django.contrib.admin",
     "django.contrib.auth",
