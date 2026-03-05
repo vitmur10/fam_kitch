@@ -696,7 +696,10 @@ async def cancel_last_order(cb: CallbackQuery):
         .order_by("-id")
         .first
     )()
-
+    if pay.status == Payment.Status.REFUNDED:
+        await cb.message.answer("✅ Це замовлення вже повернуте (refund вже зроблено).")
+        await cb.answer()
+        return
     if not pay:
         await cb.message.answer("❗ Немає оплачених замовлень для скасування.")
         await cb.answer()
@@ -714,7 +717,7 @@ async def cancel_last_order(cb: CallbackQuery):
     # тому покажемо resp якщо не ок
     if str(resp.get("reasonCode")) in ("1100",) or str(resp.get("reason", "")).lower() == "ok":
         # помічаємо в БД
-        pay.status = Payment.Status.FAILED  # краще зробити окремий REFUNDED, але мінімально — так
+        pay.status = Payment.Status.REFUNDED
         await sync_to_async(pay.save)(update_fields=["status", "raw_callback", "updated_at"])
 
         await cb.message.answer(

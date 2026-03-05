@@ -6,6 +6,7 @@ class Payment(models.Model):
         PENDING = "pending", "Pending"
         PAID = "paid", "Paid"
         FAILED = "failed", "Failed"
+        REFUNDED = "refunded", "Refunded"
 
     # ВАЖЛИВО: у тебе order модель в app "orders".
     # Замінити "orders.Order" якщо модель називається інакше.
