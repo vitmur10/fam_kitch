@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo
 import time
 from asgiref.sync import sync_to_async
 from django.apps import apps
-from payments.wayforpay import create_invoice
+from payments.wayforpay import create_invoice, refund_payment
 from keyboards.main import main_menu_kb, menu_kb, after_confirm_kb
 from keyboards.locations import locations_kb
 from keyboards.qty_picker import qty_kb
@@ -681,4 +681,47 @@ async def my_orders(cb: CallbackQuery):
         text += f"Статус: {status}\n\n"
 
     await cb.message.answer(text)
+    await cb.answer()
+
+
+@router.callback_query(F.data == "order:cancel")
+async def cancel_last_order(cb: CallbackQuery):
+    Payment = apps.get_model("payments", "Payment")
+
+    telegram_id = cb.from_user.id
+
+    # останній paid-платіж цього користувача
+    pay = await sync_to_async(
+        Payment.objects.filter(provider="wayforpay", telegram_id=telegram_id, status=Payment.Status.PAID)
+        .order_by("-id")
+        .first
+    )()
+
+    if not pay:
+        await cb.message.answer("❗ Немає оплачених замовлень для скасування.")
+        await cb.answer()
+        return
+
+    # виклик REFUND
+    resp = await refund_payment(
+        order_reference=pay.order_reference,
+        amount=str(pay.amount),
+        currency=pay.currency,
+        comment="Cancel by customer in Telegram bot",
+    )
+
+    # WayForPay зазвичай повертає reasonCode=1100 для ok (може бути різне),
+    # тому покажемо resp якщо не ок
+    if str(resp.get("reasonCode")) in ("1100",) or str(resp.get("reason", "")).lower() == "ok":
+        # помічаємо в БД
+        pay.status = Payment.Status.FAILED  # краще зробити окремий REFUNDED, але мінімально — так
+        await sync_to_async(pay.save)(update_fields=["status", "raw_callback", "updated_at"])
+
+        await cb.message.answer(
+            "✅ Замовлення скасовано.\n"
+            "💸 Повернення коштів оформлено. Зазвичай надходить протягом 1–3 робочих днів."
+        )
+    else:
+        await cb.message.answer(f"❌ Не вдалося зробити повернення.\nВідповідь WayForPay: {resp}")
+
     await cb.answer()

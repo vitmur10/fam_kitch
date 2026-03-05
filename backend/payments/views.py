@@ -3,12 +3,13 @@ import time
 import hmac
 import hashlib
 import requests
-
+import httpx
 from django.conf import settings
 from django.http import JsonResponse, HttpResponseBadRequest
 from django.views.decorators.csrf import csrf_exempt
 
 from .models import Payment
+
 
 def _hmac_md5(secret: str, s: str) -> str:
     return hmac.new(secret.encode("utf-8"), s.encode("utf-8"), hashlib.md5).hexdigest()
@@ -139,3 +140,28 @@ def wayforpay_callback(request):
         pay.save(update_fields=fields)
 
     return JsonResponse(_build_accept(order_ref))
+
+
+async def refund_payment(*, order_reference: str, amount: str, currency: str = "UAH",
+                         comment: str = "Cancel order") -> dict:
+    merchant_account = str(settings.WFP_MERCHANT_ACCOUNT).strip()
+    secret = str(settings.WFP_SECRET_KEY).strip()
+
+    # Підпис для REFUND: merchantAccount;orderReference;amount;currency
+    sign_string = ";".join([merchant_account, str(order_reference), str(amount), str(currency)])
+    signature = _hmac_md5(secret, sign_string)
+
+    payload = {
+        "apiVersion": 1,
+        "transactionType": "REFUND",
+        "merchantAccount": merchant_account,
+        "orderReference": str(order_reference),
+        "amount": str(amount),
+        "currency": currency,
+        "comment": comment,
+        "merchantSignature": signature,
+    }
+
+    async with httpx.AsyncClient(timeout=20) as client:
+        r = await client.post("https://api.wayforpay.com/api", json=payload)
+        return r.json()
