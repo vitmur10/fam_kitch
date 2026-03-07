@@ -593,7 +593,7 @@ async def on_change_location(cb: CallbackQuery, state: FSMContext):
 @router.callback_query(F.data == "admin:contact")
 async def on_admin_contact(cb: CallbackQuery):
     await cb.answer()
-    await cb.message.answer("Напишіть адміністратору: @your_admin_username")
+    await cb.message.answer("Напишіть адміністратору: @GRay_TG")
 
 
 # ================= CANCEL ORDER =================
