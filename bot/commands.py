@@ -197,7 +197,7 @@ async def on_order(message: Message, state: FSMContext):
         is_subscribed = bool(data.get("is_subscribed", True))
         await message.answer(
             "✅ Ви вже зробили замовлення на сьогодні. Хочете замовити ще?",
-            reply_markup=already_ordered_kb(is_subscribed)
+            reply_markup=ReplyKeyboardRemove()
         )
         return
 
