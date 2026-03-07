@@ -9,7 +9,8 @@ from zoneinfo import ZoneInfo
 import time
 from asgiref.sync import sync_to_async
 from django.apps import apps
-from payments.wayforpay import create_invoice, refund_payment
+from payments.wayforpay import create_invoice
+from payments.views import refund_payment
 from keyboards.main import main_menu_kb, menu_kb, after_confirm_kb
 from keyboards.locations import locations_kb
 from keyboards.qty_picker import qty_kb
