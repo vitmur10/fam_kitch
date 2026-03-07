@@ -274,8 +274,15 @@ async def on_qty(cb: CallbackQuery, state: FSMContext):
 
     if action == "plus":
         qty += 1
+
     elif action == "minus":
         qty = max(1, qty - 1)
+
+    elif action == "back":
+        await safe_edit_kb(cb, menu_kb(items, cart=cart), "Повернув меню 👇")
+        await cb.answer()
+        return
+
     elif action == "ok":
         cart[key] = qty
         await state.update_data(cart=cart)
