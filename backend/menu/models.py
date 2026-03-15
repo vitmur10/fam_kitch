@@ -3,6 +3,7 @@ from django.db import models
 
 class MenuDay(models.Model):
     date = models.DateField(unique=True)
+    image = models.ImageField(upload_to="menu_days/", blank=True, null=True)
     is_active = models.BooleanField(default=True)
 
     def __str__(self):
@@ -11,21 +12,17 @@ class MenuDay(models.Model):
 
 class MenuItem(models.Model):
     menu_day = models.ForeignKey(MenuDay, on_delete=models.CASCADE, related_name="items")
-    title = models.CharField(max_length=80)  # "Комплекс #1"
+    title = models.CharField(max_length=80)
 
-    # Повний комплекс
     full_title = models.CharField(max_length=80, default="Комплекс повністю")
-    full_price = models.PositiveIntegerField()  # 150
+    full_price = models.PositiveIntegerField()
 
-    # Позиція 1
     first_title = models.CharField(max_length=80, default="Перша страва")
     first_price = models.PositiveIntegerField(default=0)
 
-    # Позиція 2
     second_title = models.CharField(max_length=80, default="Друга страва")
     second_price = models.PositiveIntegerField(default=0)
 
-    # Позиція 3 (опційно)
     third_title = models.CharField(max_length=80, blank=True, default="")
     third_price = models.PositiveIntegerField(default=0)
 

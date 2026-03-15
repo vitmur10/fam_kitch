@@ -5,6 +5,7 @@ from django.db import models, transaction
 from asgiref.sync import sync_to_async
 from django.apps import apps
 from decimal import Decimal
+from django.conf import settings
 _cache: dict[str, tuple[float, dict[str, Any]]] = {}  # key -> (expires_at, data)
 
 
@@ -60,12 +61,6 @@ async def get_bot_text(key: str, ttl: int = 300):
 
 @sync_to_async
 def _get_active_menu_from_db(date: str | None = None):
-    """
-    ORM-версія отримання активного меню з БД.
-    Повертає: (day_id, date_iso, items)
-
-    Очікує моделі в app "menu": MenuDay, MenuItem (БЕЗ MenuPosition).
-    """
     MenuDay = apps.get_model("menu", "MenuDay")
     MenuItem = apps.get_model("menu", "MenuItem")
 
@@ -75,31 +70,23 @@ def _get_active_menu_from_db(date: str | None = None):
     day = qs.filter(date=target_date).first() if target_date else qs.order_by("-date").first()
 
     if not day:
-        return None, None, []
+        return None, None, [], None
 
     items_out: list[dict[str, Any]] = []
 
-    # беремо тільки активні items цього дня
     for it in MenuItem.objects.filter(menu_day=day, is_active=True).order_by("sort_order", "id"):
         item_title = getattr(it, "title", "") or ""
         positions_out: list[dict[str, Any]] = []
 
-        # helper
         def add_pos(key: str, title: str, price: int):
             title = (title or "").strip()
             if price and title:
                 positions_out.append({"key": key, "title": title, "price": int(price)})
 
-        # full
         add_pos(f"full:{it.id}", getattr(it, "full_title", "Комплекс повністю"), int(getattr(it, "full_price", 0) or 0))
-
-        # p1
         add_pos(f"p1:{it.id}", getattr(it, "first_title", "Перша страва"), int(getattr(it, "first_price", 0) or 0))
-
-        # p2
         add_pos(f"p2:{it.id}", getattr(it, "second_title", "Друга страва"), int(getattr(it, "second_price", 0) or 0))
 
-        # p3 (optional)
         third_title = getattr(it, "third_title", "") or ""
         third_price = int(getattr(it, "third_price", 0) or 0)
         if third_title.strip() and third_price > 0:
@@ -107,12 +94,20 @@ def _get_active_menu_from_db(date: str | None = None):
 
         items_out.append({"id": it.id, "title": item_title, "positions": positions_out})
 
-    return day.id, day.date.isoformat(), items_out
+    image_data = None
+    if getattr(day, "image", None):
+        media_base_url = getattr(settings, "MEDIA_BASE_URL", "").rstrip("/")
+        image_data = {
+            "path": day.image.path,
+            "url": f"{media_base_url}{day.image.url}" if media_base_url else day.image.url,
+        }
+
+    return day.id, day.date.isoformat(), items_out, image_data
 
 
 async def get_menu(date: str | None = None):
-    day_id, day_date, items = await _get_active_menu_from_db(date)
-    return day_id, day_date, items
+    day_id, day_date, items, image_data = await _get_active_menu_from_db(date)
+    return day_id, day_date, items, image_data
 
 
 def render_menu_text(date: str, items: list[dict]) -> str:

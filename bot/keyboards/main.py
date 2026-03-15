@@ -25,23 +25,6 @@ def _short(text: str, limit: int = 26) -> str:
 
 
 def menu_kb(items: list[dict], cart: dict) -> InlineKeyboardMarkup:
-    """
-    items формат:
-      [
-        {
-          "id": <menu_item_id>,
-          "title": "...",
-          "positions": [
-             {"key": "full:12", "title": "Комплекс повністю", "price": 150},
-             {"key": "p1:12", "title": "Перша страва", "price": 70},
-             ...
-          ]
-        }
-      ]
-
-    cart формат:
-      {"full:12": 1, "p1:12": 2}
-    """
     kb: list[list[InlineKeyboardButton]] = []
     cart = cart or {}
 
@@ -50,26 +33,52 @@ def menu_kb(items: list[dict], cart: dict) -> InlineKeyboardMarkup:
         if not positions:
             continue
 
-        item_title = (item.get("title") or "").strip() or "Меню"
-        kb.append([InlineKeyboardButton(text=_short(item_title), callback_data="noop")])
-
-        row: list[InlineKeyboardButton] = []
+        full_pos = None
+        other_positions = []
 
         for pos in positions:
             key = str(pos.get("key") or "")
             if not key:
                 continue
 
+            if key.startswith("full:"):
+                full_pos = pos
+            else:
+                other_positions.append(pos)
+
+        # 1. окремим рядком кнопка "Комплекс повністю"
+        if full_pos:
+            key = str(full_pos.get("key") or "")
+            title = _short(full_pos.get("title", ""), 22)
+            price = int(full_pos.get("price") or 0)
+
+            qty = int(cart.get(key, 0) or 0)
+            mark = "✅ " if qty > 0 else ""
+
+            kb.append([
+                InlineKeyboardButton(
+                    text=f"{mark}{title} — {price}₴",
+                    callback_data=f"pick:{key}"
+                )
+            ])
+
+        # 2. нижче окремі позиції
+        row: list[InlineKeyboardButton] = []
+
+        for pos in other_positions:
+            key = str(pos.get("key") or "")
             title = _short(pos.get("title", ""), 22)
             price = int(pos.get("price") or 0)
 
             qty = int(cart.get(key, 0) or 0)
             mark = "✅ " if qty > 0 else ""
 
-            row.append(InlineKeyboardButton(
-                text=f"{mark}{title} — {price}₴",
-                callback_data=f"pick:{key}"   # <- головне: pick:<key>
-            ))
+            row.append(
+                InlineKeyboardButton(
+                    text=f"{mark}{title} — {price}₴",
+                    callback_data=f"pick:{key}"
+                )
+            )
 
             if len(row) == 2:
                 kb.append(row)

@@ -5,10 +5,11 @@ from .models import MenuDay, MenuItem
 
 @admin.register(MenuDay)
 class MenuDayAdmin(admin.ModelAdmin):
-    list_display = ("date", "is_active", "items_count")
+    list_display = ("date", "is_active", "items_count", "image_preview")
     list_filter = ("is_active", "date")
     ordering = ("-date",)
     date_hierarchy = "date"
+    fields = ("date", "image", "is_active")
 
     def get_queryset(self, request):
         qs = super().get_queryset(request)
@@ -17,6 +18,10 @@ class MenuDayAdmin(admin.ModelAdmin):
     @admin.display(description="Комплексів")
     def items_count(self, obj):
         return getattr(obj, "_items_count", 0)
+
+    @admin.display(description="Фото")
+    def image_preview(self, obj):
+        return "Є" if obj.image else "-"
 
 
 @admin.register(MenuItem)

@@ -26,8 +26,13 @@ class ActiveMenuView(APIView):
             .order_by("sort_order", "id")
         )
 
+        image_url = None
+        if day.image:
+            image_url = request.build_absolute_uri(day.image.url)
+
         return Response({
             "day_id": day.id,
             "date": str(day.date),
+            "image": image_url,
             "items": MenuItemSerializer(items, many=True).data
         })

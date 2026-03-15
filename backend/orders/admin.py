@@ -25,8 +25,39 @@ class OrderLineInline(admin.TabularInline):
 
 @admin.register(Order)
 class OrderAdmin(admin.ModelAdmin):
-    list_display = ("id", "customer", "menu_day", "location", "status", "total", "created_at")
+    list_display = (
+        "id",
+        "customer",
+        "customer_username",
+        "customer_first_name",
+        "customer_phone",
+        "menu_day",
+        "location",
+        "status",
+        "total",
+        "created_at",
+    )
     list_filter = ("status", "menu_day", "location", "created_at")
-    search_fields = ("id", "customer__telegram_id", "customer__phone")
+    search_fields = (
+        "id",
+        "customer__telegram_id",
+        "customer__phone",
+        "customer__username",
+        "customer__first_name",
+    )
     inlines = [OrderLineInline]
     readonly_fields = ("subtotal", "total", "created_at")
+
+    @admin.display(description="Username")
+    def customer_username(self, obj):
+        if obj.customer.username:
+            return f"@{obj.customer.username}"
+        return "-"
+
+    @admin.display(description="Ім'я")
+    def customer_first_name(self, obj):
+        return obj.customer.first_name or "-"
+
+    @admin.display(description="Телефон")
+    def customer_phone(self, obj):
+        return obj.customer.phone or "-"

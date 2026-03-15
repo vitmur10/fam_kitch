@@ -9,8 +9,8 @@ from zoneinfo import ZoneInfo
 import time
 from asgiref.sync import sync_to_async
 from django.apps import apps
-from payments.wayforpay import create_invoice
-from payments.views import refund_payment
+#from payments.wayforpay import create_invoice
+#from payments.views import refund_payment
 from keyboards.main import main_menu_kb, menu_kb, after_confirm_kb
 from keyboards.locations import locations_kb
 from keyboards.qty_picker import qty_kb
@@ -21,8 +21,10 @@ from utils.utils import (
     orm_get_customer_location, orm_set_customer_location,
     orm_get_active_order_for_day, orm_cancel_order,
 )
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+import os
+from aiogram.types import FSInputFile
 import uuid
+
 router = Router()
 
 
@@ -46,6 +48,38 @@ def _display_name(user) -> str:
         return "@" + user.username
     return (getattr(user, "first_name", "") or "").strip() or "друже"
 
+
+async def send_menu_message(target, text: str, items: list[dict], menu_image: dict | None):
+    print("menu_image =", menu_image)
+
+    if menu_image:
+        image_url = (menu_image.get("url") or "").strip()
+        image_path = (menu_image.get("path") or "").strip()
+
+        print("image_url =", image_url)
+        print("image_path =", image_path)
+        print("path_exists =", os.path.exists(image_path) if image_path else False)
+
+        if image_url.startswith("http://") or image_url.startswith("https://"):
+            print("SEND BY URL")
+            await target.answer_photo(
+                photo=image_url,
+                caption=text,
+                reply_markup=menu_kb(items, cart={})
+            )
+            return
+
+        if image_path and os.path.exists(image_path):
+            print("SEND BY FILE")
+            await target.answer_photo(
+                photo=FSInputFile(image_path),
+                caption=text,
+                reply_markup=menu_kb(items, cart={})
+            )
+            return
+
+    print("SEND TEXT ONLY")
+    await target.answer(text, reply_markup=menu_kb(items, cart={}))
 
 async def safe_edit_kb(cb: CallbackQuery, reply_markup, fallback_text: str | None = None):
     """
@@ -188,8 +222,13 @@ async def on_order(message: Message, state: FSMContext):
     # відкриваємо меню одразу (і ховаємо бар-кнопки)
     await state.update_data(cart={})
 
-    menu_day_id, menu_date, items = await get_menu()
-    await state.update_data(menu_items=items, menu_date=menu_date, menu_day_id=menu_day_id)
+    menu_day_id, menu_date, items, menu_image = await get_menu()
+    await state.update_data(
+        menu_items=items,
+        menu_date=menu_date,
+        menu_day_id=menu_day_id,
+        menu_image=menu_image,
+    )
 
     # якщо вже є замовлення на цей день — запропонувати варіанти
     existing = await orm_get_active_order_for_day(message.from_user.id, int(menu_day_id or 0))
@@ -207,7 +246,7 @@ async def on_order(message: Message, state: FSMContext):
     except Exception:
         pass
 
-    await message.answer(text, reply_markup=menu_kb(items, cart={}))
+    await send_menu_message(message, text, items, menu_image)
 
 
 # ================= LOCATION -> MENU =================
@@ -226,18 +265,22 @@ async def on_location(cb: CallbackQuery, state: FSMContext):
     await state.update_data(location=loc, cart={})
     await cb.answer(f"Локація: {loc} ✅")
 
-    menu_day_id, menu_date, items = await get_menu()
-    await state.update_data(menu_items=items, menu_date=menu_date, menu_day_id=menu_day_id)
+    menu_day_id, menu_date, items, menu_image = await get_menu()
+    await state.update_data(
+        menu_items=items,
+        menu_date=menu_date,
+        menu_day_id=menu_day_id,
+        menu_image=menu_image,
+    )
 
     text = f"📅 Меню на {menu_date}\nОберіть позиції (можна повний комплекс або окремі страви):"
 
-    # hide bottom bar while selecting items
     try:
         await cb.message.answer("Ок 👌", reply_markup=ReplyKeyboardRemove())
     except Exception:
         pass
 
-    await cb.message.answer(text, reply_markup=menu_kb(items, cart={}))
+    await send_menu_message(cb.message, text, items, menu_image)
 
 
 # ================= PICK POSITION =================
@@ -397,7 +440,7 @@ async def on_confirm(cb: CallbackQuery, state: FSMContext):
         await sync_to_async(pay.save)(update_fields=["amount"])
 
     # 4) Створюємо інвойс
-    invoice = await create_invoice(
+    """    invoice = await create_invoice(
         order_reference=pay.order_reference,
         amount=total,
         products=products,
@@ -425,6 +468,17 @@ async def on_confirm(cb: CallbackQuery, state: FSMContext):
             f"Відповідь WayForPay: {invoice}"
         )
 
+    await cb.answer()"""
+    payment_text = (
+        f"✅ Замовлення №{order_id} створено\n"
+        f"💰 До сплати: {total}₴\n\n"
+        f"Реквізити для оплати:\n"
+        f"💳 Монобанк\n"
+        f"4441 1111 2222 3333\n\n"
+        f"У коментарі вкажіть номер замовлення: {order_id}"
+    )
+
+    await cb.message.answer(payment_text)
     await cb.answer()
 
 
@@ -576,15 +630,22 @@ async def on_order_more(cb: CallbackQuery, state: FSMContext):
         return
 
     await state.update_data(cart={})
-    menu_day_id, menu_date, items = await get_menu()
-    await state.update_data(menu_items=items, menu_date=menu_date, menu_day_id=menu_day_id)
+    menu_day_id, menu_date, items, menu_image = await get_menu()
+    await state.update_data(
+        menu_items=items,
+        menu_date=menu_date,
+        menu_day_id=menu_day_id,
+        menu_image=menu_image,
+    )
+
+    text = f"📅 Меню на {menu_date}\nОберіть позиції:"
 
     try:
         await cb.message.answer("Ок 👌", reply_markup=ReplyKeyboardRemove())
     except Exception:
         pass
 
-    await cb.message.answer(f"📅 Меню на {menu_date}\nОберіть позиції:", reply_markup=menu_kb(items, cart={}))
+    await send_menu_message(cb.message, text, items, menu_image)
     await cb.answer()
 
 
@@ -692,7 +753,7 @@ async def my_orders(cb: CallbackQuery):
     await cb.answer()
 
 
-@router.callback_query(F.data == "order:cancel")
+"""@router.callback_query(F.data == "order:cancel")
 async def cancel_last_order(cb: CallbackQuery):
     Payment = apps.get_model("payments", "Payment")
 
@@ -735,4 +796,4 @@ async def cancel_last_order(cb: CallbackQuery):
     else:
         await cb.message.answer(f"❌ Не вдалося зробити повернення.\nВідповідь WayForPay: {resp}")
 
-    await cb.answer()
+    await cb.answer()"""
