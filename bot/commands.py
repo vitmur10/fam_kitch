@@ -9,8 +9,8 @@ from zoneinfo import ZoneInfo
 import time
 from asgiref.sync import sync_to_async
 from django.apps import apps
-#from payments.wayforpay import create_invoice
-#from payments.views import refund_payment
+# from payments.wayforpay import create_invoice
+# from payments.views import refund_payment
 from keyboards.main import main_menu_kb, menu_kb, after_confirm_kb
 from keyboards.locations import locations_kb
 from keyboards.qty_picker import qty_kb
@@ -21,16 +21,22 @@ from utils.utils import (
     orm_get_customer_location, orm_set_customer_location,
     orm_get_active_order_for_day, orm_cancel_order,
 )
+from aiogram.fsm.state import State, StatesGroup
 import os
 from aiogram.types import FSInputFile
 import uuid
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from config import GROUP_CHAT_ID
 
 router = Router()
-
 
 # ================= helpers =================
 
 KYIV_TZ = ZoneInfo("Europe/Kyiv")
+
+
+class PaymentProofState(StatesGroup):
+    waiting_for_screenshot = State()
 
 
 def _now_kyiv() -> datetime:
@@ -80,6 +86,10 @@ async def send_menu_message(target, text: str, items: list[dict], menu_image: di
 
     print("SEND TEXT ONLY")
     await target.answer(text, reply_markup=menu_kb(items, cart={}))
+"""@router.message()
+async def debug_chat_id(message: Message):
+    print("CHAT ID:", message.chat.id)
+    await message.answer(f"Chat ID: {message.chat.id}")"""
 
 async def safe_edit_kb(cb: CallbackQuery, reply_markup, fallback_text: str | None = None):
     """
@@ -391,7 +401,8 @@ async def on_confirm(cb: CallbackQuery, state: FSMContext):
         created = None
 
     if not created or "id" not in created:
-        await cb.message.answer("❌ Не вдалося зберегти замовлення в базу. Спробуйте ще раз або напишіть адміністратору.")
+        await cb.message.answer(
+            "❌ Не вдалося зберегти замовлення в базу. Спробуйте ще раз або напишіть адміністратору.")
         await cb.answer()
         return
 
@@ -413,7 +424,7 @@ async def on_confirm(cb: CallbackQuery, state: FSMContext):
         order_reference=order_ref,
         amount=str(total),
         currency="UAH",
-        telegram_id=telegram_id,   # ✅ (після міграції в Payment)
+        telegram_id=telegram_id,  # ✅ (після міграції в Payment)
     )
 
     # 2) Формуємо products з кошика
@@ -478,7 +489,17 @@ async def on_confirm(cb: CallbackQuery, state: FSMContext):
         f"У коментарі вкажіть номер замовлення: {order_id}"
     )
 
+    proof_kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="📸 Надіслати скрін оплати", callback_data=f"payment:proof:{order_id}")]
+        ]
+    )
+
     await cb.message.answer(payment_text)
+    await cb.message.answer(
+        "Після оплати, будь ласка, надішліть скріншот платежу кнопкою нижче для перевірки адміністратором.",
+        reply_markup=proof_kb
+    )
     await cb.answer()
 
 
@@ -532,10 +553,10 @@ async def on_repeat(cb: CallbackQuery, state: FSMContext):
     lines, _ = _cart_to_lines(payload["cart"], items)
 
     text = (
-        f"✅ Повторено! Ваше замовлення №{order_id}:\n"
-        + "\n".join(lines)
-        + f"\n\n📍 Локація: {payload['location_code']}\n💰 Разом: {total}₴"
-        + "\n⏰ Очікуйте заказ 13:00–14:00"
+            f"✅ Повторено! Ваше замовлення №{order_id}:\n"
+            + "\n".join(lines)
+            + f"\n\n📍 Локація: {payload['location_code']}\n💰 Разом: {total}₴"
+            + "\n⏰ Очікуйте заказ 13:00–14:00"
     )
 
     await cb.message.answer(text, reply_markup=after_confirm_kb(is_subscribed, can_cancel=True))
@@ -587,7 +608,8 @@ async def on_share_phone(message: Message, state: FSMContext):
         return
 
     msg = await get_bot_text("ask_phone")
-    await message.answer(msg["text"], parse_mode=msg.get("parse_mode"), reply_markup=main_menu_kb(has_phone=False, show_order=True))
+    await message.answer(msg["text"], parse_mode=msg.get("parse_mode"),
+                         reply_markup=main_menu_kb(has_phone=False, show_order=True))
 
 
 # ================= ORDER MORE / CHANGE LOCATION / ADMIN =================
@@ -611,7 +633,8 @@ async def on_order_more(cb: CallbackQuery, state: FSMContext):
 
     if not phone:
         msg = await get_bot_text("ask_phone")
-        await cb.message.answer(msg["text"], parse_mode=msg.get("parse_mode"), reply_markup=main_menu_kb(has_phone=False, show_order=True))
+        await cb.message.answer(msg["text"], parse_mode=msg.get("parse_mode"),
+                                reply_markup=main_menu_kb(has_phone=False, show_order=True))
         await cb.answer()
         return
 
@@ -691,6 +714,109 @@ async def on_cancel_order(cb: CallbackQuery, state: FSMContext):
 
     await cb.message.answer(f"❌ Замовлення №{order_id} скасовано.")
     await cb.answer()
+
+
+@router.callback_query(F.data.startswith("payment:proof:"))
+async def on_payment_proof_click(cb: CallbackQuery, state: FSMContext):
+    order_id = int(cb.data.split(":")[2])
+
+    await state.update_data(waiting_payment_order_id=order_id)
+    await state.set_state(PaymentProofState.waiting_for_screenshot)
+
+    await cb.message.answer(
+        f"Будь ласка, надішліть скріншот оплати для замовлення №{order_id}."
+    )
+    await cb.answer()
+
+
+@router.callback_query(F.data.startswith("proof:approve:"))
+async def on_proof_approve(cb: CallbackQuery):
+    _, _, order_id, telegram_id = cb.data.split(":")
+    order_id = int(order_id)
+    telegram_id = int(telegram_id)
+
+    try:
+        await cb.bot.send_message(
+            telegram_id,
+            f"✅ Вашу оплату за замовленням №{order_id} підтверджено."
+        )
+    except Exception:
+        pass
+
+    await cb.message.edit_caption(
+        caption=(cb.message.caption or "") + "\n\n✅ Оплату підтверджено"
+    )
+    await cb.message.edit_reply_markup(reply_markup=None)
+    await cb.answer("Оплату підтверджено")
+
+
+@router.callback_query(F.data.startswith("proof:reject:"))
+async def on_proof_reject(cb: CallbackQuery):
+    _, _, order_id, telegram_id = cb.data.split(":")
+    order_id = int(order_id)
+    telegram_id = int(telegram_id)
+
+    try:
+        await cb.bot.send_message(
+            telegram_id,
+            f"❌ Скріншот оплати за замовленням №{order_id} не підтверджено. Будь ласка, перевірте оплату або надішліть інший скрін."
+        )
+    except Exception:
+        pass
+
+    await cb.message.edit_caption(
+        caption=(cb.message.caption or "") + "\n\n❌ Оплату не підтверджено"
+    )
+    await cb.message.edit_reply_markup(reply_markup=None)
+    await cb.answer("Оплату відхилено")
+
+
+@router.message(PaymentProofState.waiting_for_screenshot, F.photo)
+async def on_payment_screenshot(message: Message, state: FSMContext):
+    data = await state.get_data()
+    order_id = int(data.get("waiting_payment_order_id") or 0)
+
+    if not order_id:
+        await message.answer("Не вдалося визначити номер замовлення.")
+        await state.clear()
+        return
+
+    user = message.from_user
+    username = f"@{user.username}" if user.username else "-"
+    first_name = user.first_name or "-"
+    telegram_id = user.id
+
+    caption = (
+        f"📥 Новий скрін оплати\n\n"
+        f"Замовлення №{order_id}\n"
+        f"Користувач: {first_name}\n"
+        f"Username: {username}\n"
+        f"Telegram ID: {telegram_id}"
+    )
+
+    admin_kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="✅ Підтвердити", callback_data=f"proof:approve:{order_id}:{telegram_id}"),
+                InlineKeyboardButton(text="❌ Не підтвердити", callback_data=f"proof:reject:{order_id}:{telegram_id}"),
+            ]
+        ]
+    )
+
+    await message.bot.send_photo(
+        chat_id=GROUP_CHAT_ID,
+        photo=message.photo[-1].file_id,
+        caption=caption,
+        reply_markup=admin_kb
+    )
+
+    await message.answer("✅ Скріншот відправлено на перевірку адміністратору.")
+    await state.clear()
+
+
+@router.message(PaymentProofState.waiting_for_screenshot)
+async def on_payment_screenshot_invalid(message: Message):
+    await message.answer("Будь ласка, надішліть саме фото скріншота оплати.")
 
 
 # ================= RULE: ANY TEXT -> MENU =================
