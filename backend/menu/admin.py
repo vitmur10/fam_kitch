@@ -55,3 +55,38 @@ class MenuItemAdmin(admin.ModelAdmin):
                                 ("second_title", "second_price"),
                                 ("third_title", "third_price"))}),
     )
+
+@admin.register(FrozenProduct)
+class FrozenProductAdmin(admin.ModelAdmin):
+    list_display = (
+        "id",
+        "title",
+        "price",
+        "is_active",
+        "sort_order",
+        "image_preview",
+    )
+    list_filter = ("is_active",)
+    search_fields = ("title", "description")
+    ordering = ("sort_order", "id")
+
+    fields = (
+        "title",
+        "price",
+        "description",
+        "image",
+        "image_preview",
+        "is_active",
+        "sort_order",
+    )
+    readonly_fields = ("image_preview",)
+
+    def image_preview(self, obj):
+        if obj and obj.image:
+            return format_html(
+                '<img src="{}" style="max-height: 120px; border-radius: 8px;" />',
+                obj.image.url
+            )
+        return "—"
+
+    image_preview.short_description = "Превʼю"
