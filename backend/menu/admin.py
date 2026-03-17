@@ -1,7 +1,7 @@
 from django.contrib import admin
 from django.db.models import Count
-from .models import MenuDay, MenuItem
-
+from .models import MenuDay, MenuItem, FrozenProduct
+from django.utils.html import format_html
 
 @admin.register(MenuDay)
 class MenuDayAdmin(admin.ModelAdmin):
