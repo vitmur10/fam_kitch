@@ -2,8 +2,8 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.permissions import AllowAny
 
-from .models import MenuDay, MenuItem
-from .serializers import MenuItemSerializer
+from .models import MenuDay, MenuItem, FrozenProduct
+from .serializers import MenuItemSerializer, FrozenProductSerializer
 
 
 class ActiveMenuView(APIView):
@@ -26,6 +26,12 @@ class ActiveMenuView(APIView):
             .order_by("sort_order", "id")
         )
 
+        frozen_items = (
+            FrozenProduct.objects
+            .filter(is_active=True)
+            .order_by("sort_order", "id")
+        )
+
         image_url = None
         if day.image:
             image_url = request.build_absolute_uri(day.image.url)
@@ -34,5 +40,6 @@ class ActiveMenuView(APIView):
             "day_id": day.id,
             "date": str(day.date),
             "image": image_url,
-            "items": MenuItemSerializer(items, many=True).data
+            "items": MenuItemSerializer(items, many=True).data,
+            "frozen_items": FrozenProductSerializer(frozen_items, many=True).data,
         })

@@ -1,6 +1,6 @@
 from rest_framework import serializers
 from .models import Customer, DeliveryLocation, Order, OrderLine
-from menu.models import MenuDay, MenuItem
+from menu.models import MenuDay, MenuItem, FrozenProduct
 
 
 class CreateOrderSerializer(serializers.Serializer):
@@ -12,9 +12,7 @@ class CreateOrderSerializer(serializers.Serializer):
     location_code = serializers.CharField()
     menu_day_id = serializers.IntegerField()
 
-    # cart: {"full:<item_id>": qty, "p1:<item_id>": qty, ...}
     cart = serializers.DictField(child=serializers.IntegerField(min_value=1))
-
     comment = serializers.CharField(required=False, allow_blank=True)
 
     def _item_positions_from_model(self, item: MenuItem) -> dict:
@@ -56,6 +54,13 @@ class CreateOrderSerializer(serializers.Serializer):
         key_map = {}
         for it in items:
             key_map.update(self._item_positions_from_model(it))
+
+        frozen_items = FrozenProduct.objects.filter(is_active=True).order_by("sort_order", "id")
+        for fr in frozen_items:
+            key_map[f"fr:{fr.id}"] = {
+                "title": fr.title,
+                "price": int(fr.price),
+            }
 
         cart_keys = list(attrs["cart"].keys())
         missing = [k for k in cart_keys if k not in key_map]

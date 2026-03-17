@@ -5,9 +5,6 @@ from aiogram.types import (
 
 
 def main_menu_kb(has_phone: bool = False, show_order: bool = True) -> ReplyKeyboardMarkup:
-    """Bottom reply keyboard (bar).
-    show_order=False -> hide 'Замовити' while user is inside inline ordering flow.
-    """
     rows = []
     if show_order:
         rows.append([KeyboardButton(text="🥗 Замовити")])
@@ -15,7 +12,6 @@ def main_menu_kb(has_phone: bool = False, show_order: bool = True) -> ReplyKeybo
     if not has_phone:
         rows.append([KeyboardButton(text="📞 Поділитися номером", request_contact=True)])
 
-    # if everything hidden, still return a minimal keyboard to avoid UI glitches
     return ReplyKeyboardMarkup(keyboard=rows or [[KeyboardButton(text="🏠 Меню")]], resize_keyboard=True)
 
 
@@ -24,7 +20,7 @@ def _short(text: str, limit: int = 26) -> str:
     return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
-def menu_kb(items: list[dict], cart: dict) -> InlineKeyboardMarkup:
+def menu_kb(items: list[dict], frozen_items: list[dict], cart: dict) -> InlineKeyboardMarkup:
     kb: list[list[InlineKeyboardButton]] = []
     cart = cart or {}
 
@@ -46,7 +42,6 @@ def menu_kb(items: list[dict], cart: dict) -> InlineKeyboardMarkup:
             else:
                 other_positions.append(pos)
 
-        # 1. окремим рядком кнопка "Комплекс повністю"
         if full_pos:
             key = str(full_pos.get("key") or "")
             title = _short(full_pos.get("title", ""), 22)
@@ -62,7 +57,6 @@ def menu_kb(items: list[dict], cart: dict) -> InlineKeyboardMarkup:
                 )
             ])
 
-        # 2. нижче окремі позиції
         row: list[InlineKeyboardButton] = []
 
         for pos in other_positions:
@@ -87,6 +81,28 @@ def menu_kb(items: list[dict], cart: dict) -> InlineKeyboardMarkup:
         if row:
             kb.append(row)
 
+    if frozen_items:
+        kb.append([InlineKeyboardButton(text="🧊 Заморожені продукти", callback_data="noop")])
+
+        for fr in frozen_items:
+            pos = fr.get("position") or {}
+            key = str(pos.get("key") or "")
+            if not key:
+                continue
+
+            title = _short(pos.get("title", ""), 22)
+            price = int(pos.get("price") or 0)
+
+            qty = int(cart.get(key, 0) or 0)
+            mark = "✅ " if qty > 0 else ""
+
+            kb.append([
+                InlineKeyboardButton(
+                    text=f"{mark}{title} — {price}₴",
+                    callback_data=f"pick:{key}"
+                )
+            ])
+
     kb.append([InlineKeyboardButton(text="✅ Підтвердити замовлення", callback_data="confirm")])
     kb.append([InlineKeyboardButton(text="📍 Змінити локацію", callback_data="change_location")])
 
@@ -94,9 +110,6 @@ def menu_kb(items: list[dict], cart: dict) -> InlineKeyboardMarkup:
 
 
 def qty_kb(ctx: str, qty: int) -> InlineKeyboardMarkup:
-    """
-    ctx = 'full:12' | 'p1:12' | ...
-    """
     qty = max(1, int(qty or 1))
     return InlineKeyboardMarkup(inline_keyboard=[
         [
@@ -104,7 +117,10 @@ def qty_kb(ctx: str, qty: int) -> InlineKeyboardMarkup:
             InlineKeyboardButton(text=str(qty), callback_data="noop"),
             InlineKeyboardButton(text="➕", callback_data=f"qty:plus:{ctx}"),
         ],
-        [InlineKeyboardButton(text="Готово ✅", callback_data=f"qty:ok:{ctx}")],
+        [
+            InlineKeyboardButton(text="✅ Готово", callback_data=f"qty:ok:{ctx}"),
+            InlineKeyboardButton(text="⬅ Назад", callback_data=f"qty:back:{ctx}"),
+        ],
     ])
 
 
@@ -122,6 +138,3 @@ def after_confirm_kb(is_subscribed: bool, can_cancel: bool = True) -> InlineKeyb
 
     rows.append([InlineKeyboardButton(text=sub_text, callback_data=sub_cb)])
     return InlineKeyboardMarkup(inline_keyboard=rows)
-
-
-

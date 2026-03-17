@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import MenuItem
+from .models import MenuItem, FrozenProduct
 
 
 class MenuItemSerializer(serializers.ModelSerializer):
@@ -41,3 +41,18 @@ class MenuItemSerializer(serializers.ModelSerializer):
             })
 
         return positions
+
+
+class FrozenProductSerializer(serializers.ModelSerializer):
+    position = serializers.SerializerMethodField()
+
+    class Meta:
+        model = FrozenProduct
+        fields = ("id", "title", "price", "position")
+
+    def get_position(self, obj):
+        return {
+            "key": f"fr:{obj.id}",
+            "title": obj.title,
+            "price": obj.price,
+        }

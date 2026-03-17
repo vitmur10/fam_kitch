@@ -34,3 +34,20 @@ class MenuItem(models.Model):
 
     def __str__(self):
         return f"{self.title} ({self.menu_day.date})"
+
+
+class FrozenProduct(models.Model):
+    title = models.CharField(max_length=120)
+    price = models.PositiveIntegerField()
+
+    description = models.TextField(blank=True, default="")
+    image = models.ImageField(upload_to="frozen/", blank=True, null=True)
+
+    is_active = models.BooleanField(default=True)
+    sort_order = models.PositiveIntegerField(default=0)
+
+    def __str__(self):
+        return self.title
+
+    class Meta:
+        ordering = ["sort_order", "id"]

@@ -63,6 +63,7 @@ async def get_bot_text(key: str, ttl: int = 300):
 def _get_active_menu_from_db(date: str | None = None):
     MenuDay = apps.get_model("menu", "MenuDay")
     MenuItem = apps.get_model("menu", "MenuItem")
+    FrozenProduct = apps.get_model("menu", "FrozenProduct")
 
     target_date = _parse_date(date)
 
@@ -70,7 +71,7 @@ def _get_active_menu_from_db(date: str | None = None):
     day = qs.filter(date=target_date).first() if target_date else qs.order_by("-date").first()
 
     if not day:
-        return None, None, [], None
+        return None, None, [], [], None
 
     items_out: list[dict[str, Any]] = []
 
@@ -94,6 +95,18 @@ def _get_active_menu_from_db(date: str | None = None):
 
         items_out.append({"id": it.id, "title": item_title, "positions": positions_out})
 
+    frozen_out: list[dict[str, Any]] = []
+    for fr in FrozenProduct.objects.filter(is_active=True).order_by("sort_order", "id"):
+        frozen_out.append({
+            "id": fr.id,
+            "title": fr.title,
+            "position": {
+                "key": f"fr:{fr.id}",
+                "title": fr.title,
+                "price": int(fr.price or 0),
+            }
+        })
+
     image_data = None
     if getattr(day, "image", None):
         media_base_url = getattr(settings, "MEDIA_BASE_URL", "").rstrip("/")
@@ -102,12 +115,12 @@ def _get_active_menu_from_db(date: str | None = None):
             "url": f"{media_base_url}{day.image.url}" if media_base_url else day.image.url,
         }
 
-    return day.id, day.date.isoformat(), items_out, image_data
+    return day.id, day.date.isoformat(), items_out, frozen_out, image_data
 
 
 async def get_menu(date: str | None = None):
-    day_id, day_date, items, image_data = await _get_active_menu_from_db(date)
-    return day_id, day_date, items, image_data
+    day_id, day_date, items, frozen_items, image_data = await _get_active_menu_from_db(date)
+    return day_id, day_date, items, frozen_items, image_data
 
 
 def render_menu_text(date: str, items: list[dict]) -> str:
@@ -124,23 +137,21 @@ def render_menu_text(date: str, items: list[dict]) -> str:
 @sync_to_async
 def orm_create_order(payload: dict) -> dict | None:
     """
-    ORM create order WITHOUT MenuPosition.
-
     payload:
       - telegram_id
       - location_code
       - menu_day_id
-      - cart: {"full:<item_id>": qty, "p1:<item_id>": qty, ...}
+      - cart: {"full:<item_id>": qty, "p1:<item_id>": qty, "fr:<frozen_id>": qty, ...}
       - phone/first_name/username/comment (optional)
     """
     MenuDay = apps.get_model("menu", "MenuDay")
     MenuItem = apps.get_model("menu", "MenuItem")
+    FrozenProduct = apps.get_model("menu", "FrozenProduct")
 
     Order = apps.get_model("orders", "Order")
     CustomerModel = apps.get_model("orders", "Customer")
     LocationModel = apps.get_model("orders", "DeliveryLocation")
 
-    # find line model name safely
     Line = None
     for name in ("OrderLine", "OrderItem", "OrderPosition"):
         try:
@@ -175,13 +186,11 @@ def orm_create_order(payload: dict) -> dict | None:
 
         fields = {ff.name for ff in LocationModel._meta.get_fields() if isinstance(ff, models.Field)}
 
-        # try find
         if "code" in fields:
             obj = LocationModel.objects.filter(code=code).first()
             if obj:
                 return obj
 
-        # create minimal
         create_kwargs = {}
         if "code" in fields:
             create_kwargs["code"] = code
@@ -192,17 +201,21 @@ def orm_create_order(payload: dict) -> dict | None:
 
         return LocationModel.objects.create(**create_kwargs) if create_kwargs else None
 
-    # --- validate day
     menu_day_id = int(payload.get("menu_day_id") or 0)
     day = MenuDay.objects.filter(id=menu_day_id).first()
     if not day:
         raise RuntimeError(f"MenuDay id={menu_day_id} not found")
 
-    # --- build key_map for that day
     items = list(MenuItem.objects.filter(menu_day=day, is_active=True).order_by("sort_order", "id"))
     key_map: dict[str, dict] = {}
     for it in items:
         key_map.update(_item_positions_map(it))
+
+    for fr in FrozenProduct.objects.filter(is_active=True).order_by("sort_order", "id"):
+        key_map[f"fr:{fr.id}"] = {
+            "title": fr.title,
+            "price": int(fr.price or 0),
+        }
 
     cart = payload.get("cart") or {}
     if not isinstance(cart, dict) or not cart:
@@ -212,7 +225,6 @@ def orm_create_order(payload: dict) -> dict | None:
     if missing:
         raise RuntimeError(f"Invalid cart keys for this day: {missing}")
 
-    # subtotal
     subtotal_int = 0
     for k, qty in cart.items():
         qty = int(qty)
@@ -229,7 +241,6 @@ def orm_create_order(payload: dict) -> dict | None:
     location_code = payload.get("location_code") or payload.get("location") or ""
     comment = payload.get("comment") or ""
 
-    # customer create/update
     cust_fields = {f.name for f in CustomerModel._meta.get_fields() if isinstance(f, models.Field)}
     defaults = {}
     if "phone" in cust_fields:
@@ -256,7 +267,6 @@ def orm_create_order(payload: dict) -> dict | None:
     subtotal = Decimal(subtotal_int)
 
     with transaction.atomic():
-        # create order first with safe totals
         order_kwargs = {
             "customer": customer,
             "location": loc,
@@ -266,16 +276,13 @@ def orm_create_order(payload: dict) -> dict | None:
 
         order_fields = {f.name for f in Order._meta.get_fields() if isinstance(f, models.Field)}
 
-        # totals fields (optional)
         if "subtotal" in order_fields:
             order_kwargs["subtotal"] = subtotal
         if "total" in order_fields:
             order_kwargs["total"] = subtotal
-        # delivery_fee якщо є — лишимо default (0), потім перерахуємо
 
         order = Order.objects.create(**order_kwargs)
 
-        # create lines
         if Line:
             line_fields = {f.name for f in Line._meta.get_fields() if isinstance(f, models.Field)}
 
@@ -297,7 +304,6 @@ def orm_create_order(payload: dict) -> dict | None:
                 if "item_key_snapshot" in line_fields:
                     kw["item_key_snapshot"] = key
 
-                # auto-fill any remaining NOT NULL non-FK fields
                 for f in Line._meta.get_fields():
                     if not isinstance(f, models.Field):
                         continue
@@ -308,7 +314,6 @@ def orm_create_order(payload: dict) -> dict | None:
                     if f.null or f.has_default():
                         continue
 
-                    lname = f.name.lower()
                     if isinstance(f, (models.CharField, models.TextField)):
                         kw[f.name] = ""
                     elif isinstance(f, (models.IntegerField, models.PositiveIntegerField)):
@@ -324,7 +329,6 @@ def orm_create_order(payload: dict) -> dict | None:
 
                 Line.objects.create(**kw)
 
-        # recompute total if delivery_fee exists
         if "delivery_fee" in order_fields and "total" in order_fields:
             df = getattr(order, "delivery_fee", Decimal("0")) or Decimal("0")
             order.total = (getattr(order, "subtotal", subtotal) or subtotal) + Decimal(df)

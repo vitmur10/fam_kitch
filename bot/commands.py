@@ -85,7 +85,7 @@ def refund_request_kb(order_id: int) -> InlineKeyboardMarkup:
     )
 
 
-async def send_menu_message(target, text: str, items: list[dict], menu_image: dict | None):
+async def send_menu_message(target, text: str, items: list[dict], frozen_items: list[dict], menu_image: dict | None):
     if menu_image:
         image_url = (menu_image.get("url") or "").strip()
         image_path = (menu_image.get("path") or "").strip()
@@ -94,7 +94,7 @@ async def send_menu_message(target, text: str, items: list[dict], menu_image: di
             await target.answer_photo(
                 photo=image_url,
                 caption=text,
-                reply_markup=menu_kb(items, cart={})
+                reply_markup=menu_kb(items, frozen_items, cart={})
             )
             return
 
@@ -102,12 +102,11 @@ async def send_menu_message(target, text: str, items: list[dict], menu_image: di
             await target.answer_photo(
                 photo=FSInputFile(image_path),
                 caption=text,
-                reply_markup=menu_kb(items, cart={})
+                reply_markup=menu_kb(items, frozen_items, cart={})
             )
             return
 
-    await target.answer(text, reply_markup=menu_kb(items, cart={}))
-
+    await target.answer(text, reply_markup=menu_kb(items, frozen_items, cart={}))
 
 async def safe_edit_kb(cb: CallbackQuery, reply_markup, fallback_text: str | None = None):
     """
@@ -125,22 +124,26 @@ async def safe_edit_kb(cb: CallbackQuery, reply_markup, fallback_text: str | Non
         await cb.message.answer(fallback_text, reply_markup=reply_markup)
 
 
-def _positions_map(items: list[dict]) -> dict:
-    """
-    key -> {title, price}
-    items: [{positions:[{key,title,price}]}]
-    """
+def _positions_map(items: list[dict], frozen_items: list[dict]) -> dict:
     m = {}
+
     for it in items or []:
         for p in it.get("positions", []) or []:
             key = p.get("key")
             if key:
                 m[str(key)] = {"title": p.get("title", ""), "price": int(p.get("price") or 0)}
+
+    for fr in frozen_items or []:
+        p = fr.get("position") or {}
+        key = p.get("key")
+        if key:
+            m[str(key)] = {"title": p.get("title", ""), "price": int(p.get("price") or 0)}
+
     return m
 
 
-def _cart_to_lines(cart: dict, items: list[dict]) -> tuple[list[str], int]:
-    pm = _positions_map(items)
+def _cart_to_lines(cart: dict, items: list[dict], frozen_items: list[dict]) -> tuple[list[str], int]:
+    pm = _positions_map(items, frozen_items)
     lines = []
     total = 0
     for key, qty in (cart or {}).items():
@@ -213,15 +216,8 @@ async def on_order(message: Message, state: FSMContext):
     if not _is_private_message(message):
         return
 
-    # часовий фільтр (Київ)
-    """    now = _now_kyiv()
-    if not _is_working_hours_kyiv(now):
-        await message.answer("⛔ Неможливо оформити замовлення в неробочі години.")
-        return"""
-
     data = await state.get_data()
 
-    # phone: state -> db
     phone = (data.get("phone") or "").strip()
     if not phone:
         db_phone = await orm_get_customer_phone(message.from_user.id)
@@ -238,7 +234,6 @@ async def on_order(message: Message, state: FSMContext):
         )
         return
 
-    # location: state -> db
     loc = (data.get("location") or "").strip()
     if not loc:
         db_loc = await orm_get_customer_location(message.from_user.id)
@@ -246,7 +241,6 @@ async def on_order(message: Message, state: FSMContext):
             loc = db_loc
             await state.update_data(location=loc)
 
-    # якщо локації ще немає — питаємо
     if not loc:
         msg = await get_bot_text("ask_location")
         await message.answer(
@@ -256,18 +250,17 @@ async def on_order(message: Message, state: FSMContext):
         )
         return
 
-    # відкриваємо меню одразу (і ховаємо бар-кнопки)
     await state.update_data(cart={})
 
-    menu_day_id, menu_date, items, menu_image = await get_menu()
+    menu_day_id, menu_date, items, frozen_items, menu_image = await get_menu()
     await state.update_data(
         menu_items=items,
+        frozen_items=frozen_items,
         menu_date=menu_date,
         menu_day_id=menu_day_id,
         menu_image=menu_image,
     )
 
-    # якщо вже є замовлення на цей день — запропонувати варіанти
     existing = await orm_get_active_order_for_day(message.from_user.id, int(menu_day_id or 0))
     if existing:
         is_subscribed = bool(data.get("is_subscribed", True))
@@ -277,13 +270,13 @@ async def on_order(message: Message, state: FSMContext):
         )
         return
 
-    text = f"📅 Меню на {menu_date}\nОберіть позиції (можна повний комплекс або окремі страви):"
+    text = f"📅 Меню на {menu_date}\nОберіть позиції (можна повний комплекс, окремі страви або заморожені продукти):"
     try:
         await message.answer("Ок 👌", reply_markup=ReplyKeyboardRemove())
     except Exception:
         pass
 
-    await send_menu_message(message, text, items, menu_image)
+    await send_menu_message(message, text, items, frozen_items, menu_image)
 
 
 # ================= LOCATION -> MENU =================
@@ -296,32 +289,31 @@ async def on_location(cb: CallbackQuery, state: FSMContext):
 
     loc = cb.data.split(":", 1)[1]
 
-    # save last location to DB
     try:
         await orm_set_customer_location(cb.from_user.id, loc)
     except Exception:
         pass
 
-    # NEW: плоский кошик по key
     await state.update_data(location=loc, cart={})
     await cb.answer(f"Локація: {loc} ✅")
 
-    menu_day_id, menu_date, items, menu_image = await get_menu()
+    menu_day_id, menu_date, items, frozen_items, menu_image = await get_menu()
     await state.update_data(
         menu_items=items,
+        frozen_items=frozen_items,
         menu_date=menu_date,
         menu_day_id=menu_day_id,
         menu_image=menu_image,
     )
 
-    text = f"📅 Меню на {menu_date}\nОберіть позиції (можна повний комплекс або окремі страви):"
+    text = f"📅 Меню на {menu_date}\nОберіть позиції (можна повний комплекс, окремі страви або заморожені продукти):"
 
     try:
         await cb.message.answer("Ок 👌", reply_markup=ReplyKeyboardRemove())
     except Exception:
         pass
 
-    await send_menu_message(cb.message, text, items, menu_image)
+    await send_menu_message(cb.message, text, items, frozen_items, menu_image)
 
 
 # ================= PICK POSITION =================
@@ -357,6 +349,7 @@ async def on_qty(cb: CallbackQuery, state: FSMContext):
 
     data = await state.get_data()
     items = data.get("menu_items", []) or []
+    frozen_items = data.get("frozen_items", []) or []
     cart = data.get("cart", {}) or {}
 
     qty = int(cart.get(key, 0) or 1)
@@ -368,14 +361,14 @@ async def on_qty(cb: CallbackQuery, state: FSMContext):
         qty = max(1, qty - 1)
 
     elif action == "back":
-        await safe_edit_kb(cb, menu_kb(items, cart=cart), "Повернув меню 👇")
+        await safe_edit_kb(cb, menu_kb(items, frozen_items, cart=cart), "Повернув меню 👇")
         await cb.answer()
         return
 
     elif action == "ok":
         cart[key] = qty
         await state.update_data(cart=cart)
-        await safe_edit_kb(cb, menu_kb(items, cart=cart), "Оновив меню 👇")
+        await safe_edit_kb(cb, menu_kb(items, frozen_items, cart=cart), "Оновив меню 👇")
         await cb.answer("Збережено ✅")
         return
 
@@ -403,6 +396,7 @@ async def on_confirm(cb: CallbackQuery, state: FSMContext):
 
     location_code = data.get("location")
     items = data.get("menu_items", []) or []
+    frozen_items = data.get("frozen_items", []) or []
     menu_day_id = data.get("menu_day_id")
     cart = data.get("cart", {}) or {}
 
@@ -411,7 +405,7 @@ async def on_confirm(cb: CallbackQuery, state: FSMContext):
         await cb.answer(msg["text"], show_alert=True)
         return
 
-    lines, local_total = _cart_to_lines(cart, items)
+    lines, local_total = _cart_to_lines(cart, items, frozen_items)
     if not lines:
         msg = await get_bot_text("empty_cart")
         await cb.answer(msg["text"], show_alert=True)
@@ -445,7 +439,6 @@ async def on_confirm(cb: CallbackQuery, state: FSMContext):
         return
 
     order_id = int(created["id"])
-
     total = int(float(created.get("total", local_total)))
 
     Payment = apps.get_model("payments", "Payment")
@@ -461,7 +454,7 @@ async def on_confirm(cb: CallbackQuery, state: FSMContext):
         telegram_id=telegram_id,
     )
 
-    pm = _positions_map(items)
+    pm = _positions_map(items, frozen_items)
     products = []
     for key, qty in (cart or {}).items():
         meta = pm.get(str(key))
@@ -482,36 +475,6 @@ async def on_confirm(cb: CallbackQuery, state: FSMContext):
         pay.amount = str(total)
         await sync_to_async(pay.save)(update_fields=["amount"])
 
-    # 4) Створюємо інвойс
-    """    invoice = await create_invoice(
-        order_reference=pay.order_reference,
-        amount=total,
-        products=products,
-    )
-    invoice_url = invoice.get("invoiceUrl")
-
-    # 5) Відправляємо кнопку оплати
-    if invoice_url:
-        pay.invoice_url = invoice_url
-        await sync_to_async(pay.save)(update_fields=["invoice_url"])
-
-        kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="💳 Оплатити", url=invoice_url)]
-        ])
-
-        await cb.message.answer(
-            f"✅ Замовлення №{order_id} створено.\n"
-            f"💰 До сплати: {total}₴\n"
-            f"Натисніть кнопку для оплати 👇",
-            reply_markup=kb
-        )
-    else:
-        await cb.message.answer(
-            f"Замовлення №{order_id} створено, але рахунок для оплати не сформувався ❌\n"
-            f"Відповідь WayForPay: {invoice}"
-        )
-
-    await cb.answer()"""
     payment_text = (
         f"✅ Замовлення №{order_id} створено\n"
         f"💰 До сплати: {total}₴\n\n"
@@ -662,11 +625,6 @@ async def on_order_more(cb: CallbackQuery, state: FSMContext):
         await cb.answer()
         return
 
-    """    now = _now_kyiv()
-    if not _is_working_hours_kyiv(now):
-        await cb.answer("⛔ Неможливо оформити замовлення в неробочі години.", show_alert=True)
-        return"""
-
     data = await state.get_data()
 
     phone = (data.get("phone") or "").strip()
@@ -696,9 +654,10 @@ async def on_order_more(cb: CallbackQuery, state: FSMContext):
         return
 
     await state.update_data(cart={})
-    menu_day_id, menu_date, items, menu_image = await get_menu()
+    menu_day_id, menu_date, items, frozen_items, menu_image = await get_menu()
     await state.update_data(
         menu_items=items,
+        frozen_items=frozen_items,
         menu_date=menu_date,
         menu_day_id=menu_day_id,
         menu_image=menu_image,
@@ -711,7 +670,7 @@ async def on_order_more(cb: CallbackQuery, state: FSMContext):
     except Exception:
         pass
 
-    await send_menu_message(cb.message, text, items, menu_image)
+    await send_menu_message(cb.message, text, items, frozen_items, menu_image)
     await cb.answer()
 
 
