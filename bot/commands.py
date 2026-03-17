@@ -30,6 +30,7 @@ from config import GROUP_CHAT_ID
 
 router = Router()
 
+
 # ================= helpers =================
 
 KYIV_TZ = ZoneInfo("Europe/Kyiv")
@@ -37,6 +38,7 @@ KYIV_TZ = ZoneInfo("Europe/Kyiv")
 
 class PaymentProofState(StatesGroup):
     waiting_for_screenshot = State()
+    waiting_for_refund_details = State()
 
 
 def _now_kyiv() -> datetime:
@@ -55,19 +57,40 @@ def _display_name(user) -> str:
     return (getattr(user, "first_name", "") or "").strip() or "друже"
 
 
-async def send_menu_message(target, text: str, items: list[dict], menu_image: dict | None):
-    print("menu_image =", menu_image)
+def _is_private_message(message: Message) -> bool:
+    return getattr(message.chat, "type", "") == "private"
 
+
+def _is_private_callback(cb: CallbackQuery) -> bool:
+    return bool(cb.message and getattr(cb.message.chat, "type", "") == "private")
+
+
+def _is_group_callback(cb: CallbackQuery) -> bool:
+    return bool(cb.message and cb.message.chat.id == GROUP_CHAT_ID)
+
+
+def cancel_state_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="❌ Скасувати", callback_data="state:cancel")]
+        ]
+    )
+
+
+def refund_request_kb(order_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="💸 Подати заявку на повернення", callback_data=f"payment:refund:{order_id}")]
+        ]
+    )
+
+
+async def send_menu_message(target, text: str, items: list[dict], menu_image: dict | None):
     if menu_image:
         image_url = (menu_image.get("url") or "").strip()
         image_path = (menu_image.get("path") or "").strip()
 
-        print("image_url =", image_url)
-        print("image_path =", image_path)
-        print("path_exists =", os.path.exists(image_path) if image_path else False)
-
         if image_url.startswith("http://") or image_url.startswith("https://"):
-            print("SEND BY URL")
             await target.answer_photo(
                 photo=image_url,
                 caption=text,
@@ -76,7 +99,6 @@ async def send_menu_message(target, text: str, items: list[dict], menu_image: di
             return
 
         if image_path and os.path.exists(image_path):
-            print("SEND BY FILE")
             await target.answer_photo(
                 photo=FSInputFile(image_path),
                 caption=text,
@@ -84,12 +106,8 @@ async def send_menu_message(target, text: str, items: list[dict], menu_image: di
             )
             return
 
-    print("SEND TEXT ONLY")
     await target.answer(text, reply_markup=menu_kb(items, cart={}))
-"""@router.message()
-async def debug_chat_id(message: Message):
-    print("CHAT ID:", message.chat.id)
-    await message.answer(f"Chat ID: {message.chat.id}")"""
+
 
 async def safe_edit_kb(cb: CallbackQuery, reply_markup, fallback_text: str | None = None):
     """
@@ -141,6 +159,9 @@ def _cart_to_lines(cart: dict, items: list[dict]) -> tuple[list[str], int]:
 
 @router.message(CommandStart())
 async def cmd_start(message: Message, state: FSMContext):
+    if not _is_private_message(message):
+        return
+
     await state.clear()
     await state.update_data(is_subscribed=True)
 
@@ -165,6 +186,9 @@ async def cmd_start(message: Message, state: FSMContext):
 
 @router.message(F.contact)
 async def on_contact(message: Message, state: FSMContext):
+    if not _is_private_message(message):
+        return
+
     phone = (message.contact.phone_number or "").strip()
 
     await orm_set_customer_phone(
@@ -186,6 +210,9 @@ async def on_contact(message: Message, state: FSMContext):
 
 @router.message(F.text == "🥗 Замовити")
 async def on_order(message: Message, state: FSMContext):
+    if not _is_private_message(message):
+        return
+
     # часовий фільтр (Київ)
     """    now = _now_kyiv()
     if not _is_working_hours_kyiv(now):
@@ -263,6 +290,10 @@ async def on_order(message: Message, state: FSMContext):
 
 @router.callback_query(F.data.startswith("loc:"))
 async def on_location(cb: CallbackQuery, state: FSMContext):
+    if not _is_private_callback(cb):
+        await cb.answer()
+        return
+
     loc = cb.data.split(":", 1)[1]
 
     # save last location to DB
@@ -294,11 +325,14 @@ async def on_location(cb: CallbackQuery, state: FSMContext):
 
 
 # ================= PICK POSITION =================
-# callback_data: pick:<key>   key = full:12 | p1:12 | p2:12 | p3:12
 
 @router.callback_query(F.data.startswith("pick:"))
 async def on_pick(cb: CallbackQuery, state: FSMContext):
-    key = cb.data.split(":", 1)[1]  # "full:12"
+    if not _is_private_callback(cb):
+        await cb.answer()
+        return
+
+    key = cb.data.split(":", 1)[1]
     data = await state.get_data()
     cart = data.get("cart", {}) or {}
 
@@ -311,11 +345,13 @@ async def on_pick(cb: CallbackQuery, state: FSMContext):
 
 
 # ================= QTY Picker =================
-# callback_data: qty:<action>:<ctx>
-# ctx = key (full:12 / p1:12 / ...)
 
 @router.callback_query(F.data.startswith("qty:"))
 async def on_qty(cb: CallbackQuery, state: FSMContext):
+    if not _is_private_callback(cb):
+        await cb.answer()
+        return
+
     _, action, ctx = cb.data.split(":", 2)
     key = ctx
 
@@ -343,7 +379,6 @@ async def on_qty(cb: CallbackQuery, state: FSMContext):
         await cb.answer("Збережено ✅")
         return
 
-    # проміжне оновлення
     cart[key] = qty
     await state.update_data(cart=cart)
 
@@ -355,6 +390,10 @@ async def on_qty(cb: CallbackQuery, state: FSMContext):
 
 @router.callback_query(F.data == "confirm")
 async def on_confirm(cb: CallbackQuery, state: FSMContext):
+    if not _is_private_callback(cb):
+        await cb.answer()
+        return
+
     data = await state.get_data()
 
     telegram_id = cb.from_user.id
@@ -401,34 +440,28 @@ async def on_confirm(cb: CallbackQuery, state: FSMContext):
         created = None
 
     if not created or "id" not in created:
-        await cb.message.answer(
-            "❌ Не вдалося зберегти замовлення в базу. Спробуйте ще раз або напишіть адміністратору.")
+        await cb.message.answer("❌ Не вдалося зберегти замовлення в базу. Спробуйте ще раз або напишіть адміністратору.")
         await cb.answer()
         return
 
     order_id = int(created["id"])
 
-    # total з бекенду (пріоритет), якщо нема — з локального кошика
     total = int(float(created.get("total", local_total)))
 
     Payment = apps.get_model("payments", "Payment")
 
-    # ✅ УНІКАЛЬНИЙ orderReference для WayForPay
-    # щоб не було Duplicate Order ID при повторному підтвердженні
     order_ref = f"{order_id}-{int(time.time())}-{uuid.uuid4().hex[:6]}"
 
-    # 1) Створюємо запис платежу (FK правильно через order_id=)
     pay = await sync_to_async(Payment.objects.create)(
         order_id=order_id,
         provider="wayforpay",
         order_reference=order_ref,
         amount=str(total),
         currency="UAH",
-        telegram_id=telegram_id,  # ✅ (після міграції в Payment)
+        telegram_id=telegram_id,
     )
 
-    # 2) Формуємо products з кошика
-    pm = _positions_map(items)  # key -> {title, price}
+    pm = _positions_map(items)
     products = []
     for key, qty in (cart or {}).items():
         meta = pm.get(str(key))
@@ -443,7 +476,6 @@ async def on_confirm(cb: CallbackQuery, state: FSMContext):
     if not products:
         products = [{"name": "Оплата замовлення", "count": 1, "price": total}]
 
-    # 3) Перераховуємо total, щоб точно збігався з products
     total = sum(p["count"] * p["price"] for p in products)
 
     if str(pay.amount) != str(total):
@@ -489,16 +521,14 @@ async def on_confirm(cb: CallbackQuery, state: FSMContext):
         f"У коментарі вкажіть номер замовлення: {order_id}"
     )
 
-    proof_kb = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="📸 Надіслати скрін оплати", callback_data=f"payment:proof:{order_id}")]
-        ]
-    )
+    await state.update_data(waiting_payment_order_id=order_id)
+    await state.set_state(PaymentProofState.waiting_for_screenshot)
 
     await cb.message.answer(payment_text)
     await cb.message.answer(
-        "Після оплати, будь ласка, надішліть скріншот платежу кнопкою нижче для перевірки адміністратором.",
-        reply_markup=proof_kb
+        f"Після оплати надішліть наступним повідомленням скріншот платежу для замовлення №{order_id}.\n"
+        f"Щоб вийти з цього режиму, натисніть кнопку нижче.",
+        reply_markup=cancel_state_kb()
     )
     await cb.answer()
 
@@ -507,6 +537,10 @@ async def on_confirm(cb: CallbackQuery, state: FSMContext):
 
 @router.callback_query(F.data == "order:repeat")
 async def on_repeat(cb: CallbackQuery, state: FSMContext):
+    if not _is_private_callback(cb):
+        await cb.answer()
+        return
+
     data = await state.get_data()
 
     """    now = _now_kyiv()
@@ -553,10 +587,10 @@ async def on_repeat(cb: CallbackQuery, state: FSMContext):
     lines, _ = _cart_to_lines(payload["cart"], items)
 
     text = (
-            f"✅ Повторено! Ваше замовлення №{order_id}:\n"
-            + "\n".join(lines)
-            + f"\n\n📍 Локація: {payload['location_code']}\n💰 Разом: {total}₴"
-            + "\n⏰ Очікуйте заказ 13:00–14:00"
+        f"✅ Повторено! Ваше замовлення №{order_id}:\n"
+        + "\n".join(lines)
+        + f"\n\n📍 Локація: {payload['location_code']}\n💰 Разом: {total}₴"
+        + "\n⏰ Очікуйте заказ 13:00–14:00"
     )
 
     await cb.message.answer(text, reply_markup=after_confirm_kb(is_subscribed, can_cancel=True))
@@ -568,10 +602,13 @@ async def on_repeat(cb: CallbackQuery, state: FSMContext):
 
 
 # ================= SUBSCRIBE =================
-# callback_data: sub:on | sub:off
 
 @router.callback_query(F.data.startswith("sub:"))
 async def on_subscribe_toggle(cb: CallbackQuery, state: FSMContext):
+    if not _is_private_callback(cb):
+        await cb.answer()
+        return
+
     _, val = cb.data.split(":")
     is_sub = val == "on"
 
@@ -589,12 +626,18 @@ async def on_subscribe_toggle(cb: CallbackQuery, state: FSMContext):
 
 @router.message(F.text == "ℹ️ Допомога")
 async def on_help(message: Message):
+    if not _is_private_message(message):
+        return
+
     msg = await get_bot_text("help")
     await message.answer(msg["text"], parse_mode=msg.get("parse_mode"))
 
 
 @router.message(F.text == "📞 Поділитися номером")
 async def on_share_phone(message: Message, state: FSMContext):
+    if not _is_private_message(message):
+        return
+
     data = await state.get_data()
     phone = (data.get("phone") or "").strip()
     if not phone:
@@ -608,14 +651,17 @@ async def on_share_phone(message: Message, state: FSMContext):
         return
 
     msg = await get_bot_text("ask_phone")
-    await message.answer(msg["text"], parse_mode=msg.get("parse_mode"),
-                         reply_markup=main_menu_kb(has_phone=False, show_order=True))
+    await message.answer(msg["text"], parse_mode=msg.get("parse_mode"), reply_markup=main_menu_kb(has_phone=False, show_order=True))
 
 
 # ================= ORDER MORE / CHANGE LOCATION / ADMIN =================
 
 @router.callback_query(F.data == "order:more")
 async def on_order_more(cb: CallbackQuery, state: FSMContext):
+    if not _is_private_callback(cb):
+        await cb.answer()
+        return
+
     """    now = _now_kyiv()
     if not _is_working_hours_kyiv(now):
         await cb.answer("⛔ Неможливо оформити замовлення в неробочі години.", show_alert=True)
@@ -623,7 +669,6 @@ async def on_order_more(cb: CallbackQuery, state: FSMContext):
 
     data = await state.get_data()
 
-    # ensure phone
     phone = (data.get("phone") or "").strip()
     if not phone:
         db_phone = await orm_get_customer_phone(cb.from_user.id)
@@ -633,12 +678,10 @@ async def on_order_more(cb: CallbackQuery, state: FSMContext):
 
     if not phone:
         msg = await get_bot_text("ask_phone")
-        await cb.message.answer(msg["text"], parse_mode=msg.get("parse_mode"),
-                                reply_markup=main_menu_kb(has_phone=False, show_order=True))
+        await cb.message.answer(msg["text"], parse_mode=msg.get("parse_mode"), reply_markup=main_menu_kb(has_phone=False, show_order=True))
         await cb.answer()
         return
 
-    # ensure location
     loc = (data.get("location") or "").strip()
     if not loc:
         db_loc = await orm_get_customer_location(cb.from_user.id)
@@ -674,7 +717,10 @@ async def on_order_more(cb: CallbackQuery, state: FSMContext):
 
 @router.callback_query(F.data == "change_location")
 async def on_change_location(cb: CallbackQuery, state: FSMContext):
-    # do not remove location from DB until user picks a new one
+    if not _is_private_callback(cb):
+        await cb.answer()
+        return
+
     await state.update_data(cart={})
     msg = await get_bot_text("ask_location")
     await cb.message.answer(msg["text"], parse_mode=msg.get("parse_mode"), reply_markup=locations_kb())
@@ -683,6 +729,10 @@ async def on_change_location(cb: CallbackQuery, state: FSMContext):
 
 @router.callback_query(F.data == "admin:contact")
 async def on_admin_contact(cb: CallbackQuery):
+    if not _is_private_callback(cb):
+        await cb.answer()
+        return
+
     await cb.answer()
     await cb.message.answer("Напишіть адміністратору: @GRay_TG")
 
@@ -691,11 +741,14 @@ async def on_admin_contact(cb: CallbackQuery):
 
 @router.callback_query(F.data == "order:cancel")
 async def on_cancel_order(cb: CallbackQuery, state: FSMContext):
+    if not _is_private_callback(cb):
+        await cb.answer()
+        return
+
     data = await state.get_data()
     last = data.get("last_order") or {}
     order_id = int(last.get("order_id") or 0)
 
-    # fallback: try detect today's order by menu_day
     if not order_id:
         menu_day_id = int(data.get("menu_day_id") or 0)
         if menu_day_id:
@@ -716,21 +769,45 @@ async def on_cancel_order(cb: CallbackQuery, state: FSMContext):
     await cb.answer()
 
 
-@router.callback_query(F.data.startswith("payment:proof:"))
-async def on_payment_proof_click(cb: CallbackQuery, state: FSMContext):
-    order_id = int(cb.data.split(":")[2])
+# ================= STATES =================
 
-    await state.update_data(waiting_payment_order_id=order_id)
-    await state.set_state(PaymentProofState.waiting_for_screenshot)
+@router.callback_query(F.data == "state:cancel")
+async def on_state_cancel(cb: CallbackQuery, state: FSMContext):
+    if not _is_private_callback(cb):
+        await cb.answer()
+        return
+
+    await state.clear()
+    await cb.message.answer("❌ Дію скасовано.")
+    await cb.answer()
+
+
+@router.callback_query(F.data.startswith("payment:refund:"))
+async def on_payment_refund_request(cb: CallbackQuery, state: FSMContext):
+    if not _is_private_callback(cb):
+        await cb.answer()
+        return
+
+    order_id = int(cb.data.split(":")[2])
+    await state.update_data(waiting_refund_order_id=order_id)
+    await state.set_state(PaymentProofState.waiting_for_refund_details)
 
     await cb.message.answer(
-        f"Будь ласка, надішліть скріншот оплати для замовлення №{order_id}."
+        f"Вкажіть, будь ласка, куди повернути кошти за замовлення №{order_id}.\n"
+        f"Можете надіслати номер картки, IBAN або інші реквізити одним повідомленням.",
+        reply_markup=cancel_state_kb()
     )
     await cb.answer()
 
 
+# ================= GROUP MODERATION =================
+
 @router.callback_query(F.data.startswith("proof:approve:"))
 async def on_proof_approve(cb: CallbackQuery):
+    if not _is_group_callback(cb):
+        await cb.answer()
+        return
+
     _, _, order_id, telegram_id = cb.data.split(":")
     order_id = int(order_id)
     telegram_id = int(telegram_id)
@@ -738,7 +815,8 @@ async def on_proof_approve(cb: CallbackQuery):
     try:
         await cb.bot.send_message(
             telegram_id,
-            f"✅ Вашу оплату за замовленням №{order_id} підтверджено."
+            f"✅ Вашу оплату за замовленням №{order_id} підтверджено.",
+            reply_markup=refund_request_kb(order_id)
         )
     except Exception:
         pass
@@ -752,6 +830,10 @@ async def on_proof_approve(cb: CallbackQuery):
 
 @router.callback_query(F.data.startswith("proof:reject:"))
 async def on_proof_reject(cb: CallbackQuery):
+    if not _is_group_callback(cb):
+        await cb.answer()
+        return
+
     _, _, order_id, telegram_id = cb.data.split(":")
     order_id = int(order_id)
     telegram_id = int(telegram_id)
@@ -771,8 +853,63 @@ async def on_proof_reject(cb: CallbackQuery):
     await cb.answer("Оплату відхилено")
 
 
+@router.callback_query(F.data.startswith("refund:approve:"))
+async def on_refund_approve(cb: CallbackQuery):
+    if not _is_group_callback(cb):
+        await cb.answer()
+        return
+
+    _, _, order_id, telegram_id = cb.data.split(":")
+    order_id = int(order_id)
+    telegram_id = int(telegram_id)
+
+    try:
+        await cb.bot.send_message(
+            telegram_id,
+            f"✅ Заявку на повернення коштів за замовленням №{order_id} прийнято в обробку."
+        )
+    except Exception:
+        pass
+
+    await cb.message.edit_caption(
+        caption=(cb.message.caption or "") + "\n\n✅ Заявку на повернення прийнято"
+    )
+    await cb.message.edit_reply_markup(reply_markup=None)
+    await cb.answer("Заявку прийнято")
+
+
+@router.callback_query(F.data.startswith("refund:reject:"))
+async def on_refund_reject(cb: CallbackQuery):
+    if not _is_group_callback(cb):
+        await cb.answer()
+        return
+
+    _, _, order_id, telegram_id = cb.data.split(":")
+    order_id = int(order_id)
+    telegram_id = int(telegram_id)
+
+    try:
+        await cb.bot.send_message(
+            telegram_id,
+            f"❌ Заявку на повернення коштів за замовленням №{order_id} відхилено. Зв’яжіться з адміністратором для уточнення."
+        )
+    except Exception:
+        pass
+
+    await cb.message.edit_caption(
+        caption=(cb.message.caption or "") + "\n\n❌ Заявку на повернення відхилено"
+    )
+    await cb.message.edit_reply_markup(reply_markup=None)
+    await cb.answer("Заявку відхилено")
+
+
+# ================= USER MEDIA / FORMS =================
+
 @router.message(PaymentProofState.waiting_for_screenshot, F.photo)
 async def on_payment_screenshot(message: Message, state: FSMContext):
+    if not _is_private_message(message):
+        return
+
     data = await state.get_data()
     order_id = int(data.get("waiting_payment_order_id") or 0)
 
@@ -814,16 +951,75 @@ async def on_payment_screenshot(message: Message, state: FSMContext):
     await state.clear()
 
 
+@router.message(PaymentProofState.waiting_for_refund_details)
+async def on_refund_details(message: Message, state: FSMContext):
+    if not _is_private_message(message):
+        return
+
+    data = await state.get_data()
+    order_id = int(data.get("waiting_refund_order_id") or 0)
+
+    if not order_id:
+        await message.answer("Не вдалося визначити номер замовлення для повернення.")
+        await state.clear()
+        return
+
+    refund_details = (message.text or message.caption or "").strip()
+    if not refund_details:
+        await message.answer("Будь ласка, надішліть реквізити текстом одним повідомленням.")
+        return
+
+    user = message.from_user
+    username = f"@{user.username}" if user.username else "-"
+    first_name = user.first_name or "-"
+    telegram_id = user.id
+
+    caption = (
+        f"💸 Нова заявка на повернення коштів\n\n"
+        f"Замовлення №{order_id}\n"
+        f"Користувач: {first_name}\n"
+        f"Username: {username}\n"
+        f"Telegram ID: {telegram_id}\n\n"
+        f"Куди повернути:\n{refund_details}"
+    )
+
+    admin_kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="✅ Прийняти", callback_data=f"refund:approve:{order_id}:{telegram_id}"),
+                InlineKeyboardButton(text="❌ Відхилити", callback_data=f"refund:reject:{order_id}:{telegram_id}"),
+            ]
+        ]
+    )
+
+    await message.bot.send_message(
+        chat_id=GROUP_CHAT_ID,
+        text=caption,
+        reply_markup=admin_kb
+    )
+
+    await message.answer("✅ Заявку на повернення відправлено адміністратору.")
+    await state.clear()
+
+
 @router.message(PaymentProofState.waiting_for_screenshot)
 async def on_payment_screenshot_invalid(message: Message):
-    await message.answer("Будь ласка, надішліть саме фото скріншота оплати.")
+    if not _is_private_message(message):
+        return
+
+    await message.answer(
+        "Зараз бот очікує фото скріншота оплати.\n"
+        "Надішліть, будь ласка, саме фото або натисніть «❌ Скасувати»."
+    )
 
 
 # ================= RULE: ANY TEXT -> MENU =================
 
 @router.message()
 async def on_any_message(message: Message, state: FSMContext):
-    # if it's not text (stickers, photos etc.)
+    if not _is_private_message(message):
+        return
+
     data = await state.get_data()
     phone = (data.get("phone") or "").strip()
     if not phone:
@@ -840,12 +1036,15 @@ async def on_any_message(message: Message, state: FSMContext):
 
 @router.callback_query(F.data == "orders:list")
 async def my_orders(cb: CallbackQuery):
+    if not _is_private_callback(cb):
+        await cb.answer()
+        return
+
     Order = apps.get_model("orders", "Order")
     Payment = apps.get_model("payments", "Payment")
 
     telegram_id = cb.from_user.id
 
-    # беремо останні 5 замовлень
     orders = await sync_to_async(list)(
         Order.objects.filter(telegram_id=telegram_id)
         .order_by("-id")[:5]
@@ -859,7 +1058,6 @@ async def my_orders(cb: CallbackQuery):
     text = "📦 Ваші останні замовлення:\n\n"
 
     for order in orders:
-
         pay = await sync_to_async(
             Payment.objects.filter(order_id=order.id).first
         )()
