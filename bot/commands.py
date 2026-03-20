@@ -58,7 +58,16 @@ def _resolve_order_target_date_kyiv(now: datetime):
 
     return now.date()
 
+def _menu_not_ready_text(target_date) -> str:
+    try:
+        pretty = target_date.strftime("%d.%m.%Y")
+    except Exception:
+        pretty = str(target_date)
 
+    return (
+        f"⛔ Меню на {pretty} ще не додано.\n"
+        f"Спробуйте пізніше або зверніться до адміністратора."
+    )
 def _ordering_closed_text() -> str:
     return (
         "⛔ Прийом замовлень тимчасово закритий.\n"
@@ -385,6 +394,15 @@ async def on_order(message: Message, state: FSMContext):
     await state.update_data(cart={})
 
     menu_day_id, menu_date, items, frozen_items, menu_image = await get_menu(target_date.isoformat())
+
+    if not menu_day_id or not menu_date:
+        await message.answer(_menu_not_ready_text(target_date))
+        return
+
+    if not items and not frozen_items:
+        await message.answer(_menu_not_ready_text(target_date))
+        return
+
     await state.update_data(
         menu_items=items,
         frozen_items=frozen_items,
@@ -437,6 +455,15 @@ async def on_location(cb: CallbackQuery, state: FSMContext):
     await cb.answer(f"Локація: {loc} ✅")
 
     menu_day_id, menu_date, items, frozen_items, menu_image = await get_menu(target_date.isoformat())
+
+    if not menu_day_id or not menu_date:
+        await cb.message.answer(_menu_not_ready_text(target_date))
+        return
+
+    if not items and not frozen_items:
+        await cb.message.answer(_menu_not_ready_text(target_date))
+        return
+
     await state.update_data(
         menu_items=items,
         frozen_items=frozen_items,
@@ -813,7 +840,19 @@ async def on_order_more(cb: CallbackQuery, state: FSMContext):
         return
 
     await state.update_data(cart={})
+
     menu_day_id, menu_date, items, frozen_items, menu_image = await get_menu(target_date.isoformat())
+
+    if not menu_day_id or not menu_date:
+        await cb.message.answer(_menu_not_ready_text(target_date))
+        await cb.answer()
+        return
+
+    if not items and not frozen_items:
+        await cb.message.answer(_menu_not_ready_text(target_date))
+        await cb.answer()
+        return
+
     await state.update_data(
         menu_items=items,
         frozen_items=frozen_items,
