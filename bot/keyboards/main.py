@@ -82,29 +82,43 @@ def menu_kb(items: list[dict], frozen_items: list[dict], cart: dict) -> InlineKe
             kb.append(row)
 
     if frozen_items:
-        kb.append([InlineKeyboardButton(text="🧊 Заморожені продукти", callback_data="noop")])
-
-        for fr in frozen_items:
-            pos = fr.get("position") or {}
-            key = str(pos.get("key") or "")
-            if not key:
-                continue
-
-            title = _short(pos.get("title", ""), 22)
-            price = int(pos.get("price") or 0)
-
-            qty = int(cart.get(key, 0) or 0)
-            mark = "✅ " if qty > 0 else ""
-
-            kb.append([
-                InlineKeyboardButton(
-                    text=f"{mark}{title} — {price}₴",
-                    callback_data=f"pick:{key}"
-                )
-            ])
+        kb.append([
+            InlineKeyboardButton(
+                text="🧊 Заморожені продукти",
+                callback_data="menu:frozen"
+            )
+        ])
 
     kb.append([InlineKeyboardButton(text="✅ Підтвердити замовлення", callback_data="confirm")])
     kb.append([InlineKeyboardButton(text="📍 Змінити локацію", callback_data="change_location")])
+
+    return InlineKeyboardMarkup(inline_keyboard=kb)
+
+
+def frozen_kb(frozen_items: list[dict], cart: dict) -> InlineKeyboardMarkup:
+    kb: list[list[InlineKeyboardButton]] = []
+    cart = cart or {}
+
+    for fr in frozen_items or []:
+        pos = fr.get("position") or {}
+        key = str(pos.get("key") or "")
+        if not key:
+            continue
+
+        title = _short(pos.get("title", ""), 22)
+        price = int(pos.get("price") or 0)
+
+        qty = int(cart.get(key, 0) or 0)
+        mark = "✅ " if qty > 0 else ""
+
+        kb.append([
+            InlineKeyboardButton(
+                text=f"{mark}{title} — {price}₴",
+                callback_data=f"pick:{key}"
+            )
+        ])
+
+    kb.append([InlineKeyboardButton(text="⬅ Назад до меню", callback_data="menu:main")])
 
     return InlineKeyboardMarkup(inline_keyboard=kb)
 

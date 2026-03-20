@@ -11,7 +11,7 @@ from asgiref.sync import sync_to_async
 from django.apps import apps
 # from payments.wayforpay import create_invoice
 # from payments.views import refund_payment
-from keyboards.main import main_menu_kb, menu_kb, after_confirm_kb
+from keyboards.main import main_menu_kb, menu_kb, after_confirm_kb, frozen_kb
 from keyboards.locations import locations_kb
 from keyboards.qty_picker import qty_kb
 from utils.utils import (
@@ -527,14 +527,22 @@ async def on_qty(cb: CallbackQuery, state: FSMContext):
         qty = max(1, qty - 1)
 
     elif action == "back":
-        await safe_edit_kb(cb, menu_kb(items, frozen_items, cart=cart), "Повернув меню 👇")
+        if str(key).startswith("fr:"):
+            await safe_edit_kb(cb, frozen_kb(frozen_items, cart), "Повернув заморожені продукти 👇")
+        else:
+            await safe_edit_kb(cb, menu_kb(items, frozen_items, cart), "Повернув меню 👇")
         await cb.answer()
         return
 
     elif action == "ok":
         cart[key] = qty
         await state.update_data(cart=cart)
-        await safe_edit_kb(cb, menu_kb(items, frozen_items, cart=cart), "Оновив меню 👇")
+
+        if str(key).startswith("fr:"):
+            await safe_edit_kb(cb, frozen_kb(frozen_items, cart), "Оновив заморожені продукти 👇")
+        else:
+            await safe_edit_kb(cb, menu_kb(items, frozen_items, cart), "Оновив меню 👇")
+
         await cb.answer("Збережено ✅")
         return
 
@@ -1299,6 +1307,36 @@ async def on_refund_back(cb: CallbackQuery, state: FSMContext):
     )
     await cb.answer()
 
+@router.callback_query(F.data == "menu:frozen")
+async def on_open_frozen_menu(cb: CallbackQuery, state: FSMContext):
+    if not _is_private_callback(cb):
+        await cb.answer()
+        return
+
+    data = await state.get_data()
+    frozen_items = data.get("frozen_items", []) or []
+    cart = data.get("cart", {}) or {}
+
+    if not frozen_items:
+        await cb.answer("Заморожені продукти поки недоступні 🙁", show_alert=True)
+        return
+
+    await safe_edit_kb(cb, frozen_kb(frozen_items, cart), "Оберіть заморожені продукти 👇")
+    await cb.answer()
+
+@router.callback_query(F.data == "menu:main")
+async def on_open_main_menu(cb: CallbackQuery, state: FSMContext):
+    if not _is_private_callback(cb):
+        await cb.answer()
+        return
+
+    data = await state.get_data()
+    items = data.get("menu_items", []) or []
+    frozen_items = data.get("frozen_items", []) or []
+    cart = data.get("cart", {}) or {}
+
+    await safe_edit_kb(cb, menu_kb(items, frozen_items, cart), "Повернув меню 👇")
+    await cb.answer()
 """@router.callback_query(F.data == "order:cancel")
 async def cancel_last_order(cb: CallbackQuery):
     Payment = apps.get_model("payments", "Payment")
