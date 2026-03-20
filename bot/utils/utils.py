@@ -1,5 +1,6 @@
 import time
-from datetime import date as dt_date
+from datetime import date as dt_date, datetime
+from zoneinfo import ZoneInfo
 from typing import Any
 from django.db import models, transaction
 from asgiref.sync import sync_to_async
@@ -27,6 +28,8 @@ def _parse_date(date_str: str | None) -> dt_date | None:
     except Exception:
         return None
 
+def _today_kyiv() -> dt_date:
+    return datetime.now(tz=ZoneInfo("Europe/Kyiv")).date()
 
 @sync_to_async
 def _get_bot_message_from_db(key: str) -> dict[str, Any] | None:
@@ -456,25 +459,45 @@ def orm_get_active_order_for_day(telegram_id: int, menu_day_id: int) -> dict | N
 
 
 @sync_to_async
-def orm_cancel_order(telegram_id: int, order_id: int) -> bool:
-    """Cancels order if it belongs to user and is not DONE/CANCELLED."""
+def orm_cancel_order(telegram_id: int, order_id: int) -> dict:
+    """
+    Cancels order if it belongs to user and:
+    - is not DONE/CANCELLED
+    - delivery day has NOT started yet
+
+    Якщо день доставки вже настав, скасування заборонене.
+    """
     Order = apps.get_model("orders", "Order")
     Customer = apps.get_model("orders", "Customer")
 
     customer = Customer.objects.filter(telegram_id=int(telegram_id)).first()
     if not customer:
-        return False
+        return {"ok": False, "reason": "customer_not_found"}
 
-    o = Order.objects.filter(id=int(order_id), customer=customer).first()
+    o = Order.objects.select_related("menu_day").filter(id=int(order_id), customer=customer).first()
     if not o:
-        return False
+        return {"ok": False, "reason": "order_not_found"}
 
     st = (o.status or "").lower()
     if st in ("done", "cancelled"):
-        return False
+        return {"ok": False, "reason": "already_closed"}
 
-    # set cancelled
+    today = _today_kyiv()
+    delivery_date = getattr(getattr(o, "menu_day", None), "date", None)
+
+    if delivery_date and delivery_date <= today:
+        return {"ok": False, "reason": "delivery_day_started"}
+
     cancelled_val = getattr(Order, "Status").CANCELLED if hasattr(Order, "Status") else "cancelled"
     o.status = cancelled_val
     o.save(update_fields=["status"])
-    return True
+    return {"ok": True}
+
+@sync_to_async
+def orm_get_subscribed_customer_ids() -> list[int]:
+    Customer = apps.get_model("orders", "Customer")
+    return list(
+        Customer.objects
+        .filter(is_subscribed=True)
+        .values_list("telegram_id", flat=True)
+    )

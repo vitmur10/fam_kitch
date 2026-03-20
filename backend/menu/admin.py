@@ -3,6 +3,7 @@ from django.db.models import Count
 from .models import MenuDay, MenuItem, FrozenProduct
 from django.utils.html import format_html
 
+
 @admin.register(MenuDay)
 class MenuDayAdmin(admin.ModelAdmin):
     list_display = ("date", "is_active", "items_count", "image_preview")
@@ -55,6 +56,7 @@ class MenuItemAdmin(admin.ModelAdmin):
                                 ("second_title", "second_price"),
                                 ("third_title", "third_price"))}),
     )
+
 
 @admin.register(FrozenProduct)
 class FrozenProductAdmin(admin.ModelAdmin):
