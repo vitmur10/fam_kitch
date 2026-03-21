@@ -1026,6 +1026,12 @@ async def on_proof_approve(cb: CallbackQuery):
             success_text,
             reply_markup=refund_request_kb(order_id)
         )
+
+        await cb.bot.send_message(
+            telegram_id,
+            "🏠 Головне меню",
+            reply_markup=main_menu_kb(has_phone=True, show_order=True)
+        )
     except Exception:
         pass
 
