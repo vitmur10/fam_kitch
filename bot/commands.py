@@ -998,6 +998,8 @@ async def on_proof_approve(cb: CallbackQuery):
 
     location_code = "-"
     delivery_date = "-"
+    menu_date_iso = None
+
     try:
         order = await sync_to_async(
             Order.objects.select_related("location", "menu_day").filter(id=order_id).first
@@ -1005,6 +1007,7 @@ async def on_proof_approve(cb: CallbackQuery):
         if order and getattr(order, "location", None):
             location_code = getattr(order.location, "code", "-") or "-"
         if order and getattr(order, "menu_day", None) and getattr(order.menu_day, "date", None):
+            menu_date_iso = order.menu_day.date.isoformat()
             delivery_date = order.menu_day.date.strftime("%d.%m.%Y")
     except Exception:
         pass
@@ -1027,11 +1030,15 @@ async def on_proof_approve(cb: CallbackQuery):
             reply_markup=refund_request_kb(order_id)
         )
 
-        await cb.bot.send_message(
-            telegram_id,
-            "🏠 Головне меню",
-            reply_markup=main_menu_kb(has_phone=True, show_order=True)
-        )
+        if menu_date_iso:
+            menu_day_id, menu_date, items, frozen_items, menu_image = await get_menu(menu_date_iso)
+
+            if menu_day_id and menu_date:
+                await cb.bot.send_message(
+                    telegram_id,
+                    f"📅 Меню на {menu_date}\nОберіть позиції:",
+                    reply_markup=menu_kb(items, frozen_items, cart={})
+                )
     except Exception:
         pass
 
